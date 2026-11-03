@@ -1,0 +1,91 @@
+# ==========================================
+# CREDENCIALES Y SECRETOS (CRÍTICO)
+# ==========================================
+# NUNCA subir llaves privadas de Google Cloud ni contraseñas a GitHub
+credentials/*
+!credentials/.gitkeep
+!credentials/*.example
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Archivos de variables de entorno
+.env
+.env.*
+!.env.example
+
+# ==========================================
+# ARCHIVOS DE SALIDA Y PROCESAMIENTO LOCAL
+# ==========================================
+# Imágenes procesadas, mapas de imágenes y temporales
+output/*
+!output/.gitkeep
+!output/processed/.gitkeep
+
+# ==========================================
+# BYTECODE Y CACHÉ DE PYTHON
+# ==========================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# ==========================================
+# ENTORNOS VIRTUALES
+# ==========================================
+venv/
+.venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# ==========================================
+# MODELOS DE IA Y PESOS DESCARGADOS
+# ==========================================
+# Rembg / u2net / onnxruntime pesos locales
+*.onnx
+*.pth
+*.pt
+.u2net/
+
+# ==========================================
+# DISTRIBUCIÓN Y EMPAQUETADO (PyInstaller, etc.)
+# ==========================================
+build/
+dist/
+*.spec
+*.egg-info/
+*.egg
+
+# ==========================================
+# LOGS Y ARCHIVOS TEMPORALES
+# ==========================================
+*.log
+logs/
+*.tmp
+*.temp
+
+# ==========================================
+# CONFIGURACIÓN DE EDITORES E IDEs
+# ==========================================
+.vscode/
+.idea/
+*.sublime-workspace
+*.sublime-project
+
+# ==========================================
+# ARCHIVOS DEL SISTEMA OPERATIVO
+# ==========================================
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+desktop.ini
+$RECYCLE.BIN/
+.DS_Store
+.AppleDouble
+.LSOverride
+
