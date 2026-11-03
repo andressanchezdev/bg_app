@@ -145,10 +145,10 @@ class BatchTabWidget(QWidget):
                 
                 records = ImageIndexer.scan_folder(folder)
                 
-                # Si el usuario no eligió una carpeta de salida previamente, asignar una temporal automática
+                # Si el usuario no eligió una carpeta de salida previamente, asignar output/processed
                 if not self.batch_output_dir:
-                    self.batch_output_dir = os.path.join(tempfile.gettempdir(), "bg_remover_temp_output")
-                    self.is_default_temp_output = True
+                    self.batch_output_dir = os.path.join(os.getcwd(), "output", "processed")
+                    self.is_default_temp_output = False
                 
                 os.makedirs(self.batch_output_dir, exist_ok=True)
                 self.json_map_path = os.path.join(self.batch_output_dir, "image_map.json")
@@ -291,12 +291,13 @@ class BatchTabWidget(QWidget):
         self.btn_select_files.setEnabled(True)
         self.btn_select_out_dir.setEnabled(True)
 
-        # Si se usó la ruta temporal por defecto, limpiarla y eliminarla al finalizar todo el lote
+        # Si se usó la ruta temporal por defecto (solo con subida a la nube), limpiarla
         if self.is_default_temp_output and self.batch_output_dir and os.path.exists(self.batch_output_dir):
             try:
                 shutil.rmtree(self.batch_output_dir)
-                print(f"[Limpieza]: Carpeta temporal de salida eliminada exitosamente: {self.batch_output_dir}")
+                print(f"[Limpieza]: Carpeta temporal de salida eliminada: {self.batch_output_dir}")
             except Exception as e:
                 print(f"[Aviso Limpieza]: No se pudo eliminar la carpeta temporal: {e}")
 
-        QMessageBox.information(self, "Proceso Finalizado", "El lote de imágenes se ha procesado por completo.")
+        msg = f"El lote de imágenes se ha procesado por completo.\n\nDestino: {self.batch_output_dir}"
+        QMessageBox.information(self, "Proceso Finalizado", msg)

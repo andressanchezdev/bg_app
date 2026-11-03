@@ -3,7 +3,7 @@ import json
 from pathlib import Path
 from typing import List, Dict, Any
 
-VALID_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
+VALID_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".heic", ".heif"}
 
 
 class ImageIndexer:
@@ -40,6 +40,53 @@ class ImageIndexer:
         return image_records
 
     @staticmethod
+    def scan_single_file(file_path_str: str) -> List[Dict[str, Any]]:
+        """
+        Mapea un único archivo de imagen en la misma estructura de datos que un lote.
+        """
+        file_path = Path(file_path_str).resolve()
+        if not file_path.exists() or not file_path.is_file():
+            raise ValueError(f"El archivo no existe: {file_path_str}")
+
+        if file_path.suffix.lower() not in VALID_EXTENSIONS:
+            raise ValueError(f"Extensión no admitida ({file_path.suffix}). Formatos: {', '.join(VALID_EXTENSIONS)}")
+
+        return [{
+            "folder_name": file_path.parent.name,
+            "filename": file_path.name,
+            "relative_path": file_path.name,
+            "absolute_path": str(file_path),
+            "processed_path": None,
+            "processed": False,
+            "cloud_url": None
+        }]
+
+    @staticmethod
+    def get_summary(records: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """
+        Genera estadísticas y métricas del conjunto de imágenes para la vista previa.
+        """
+        total = len(records)
+        format_counts: Dict[str, int] = {}
+        folders = set()
+
+        for rec in records:
+            ext = Path(rec["filename"]).suffix.lower().replace(".", "").upper()
+            if ext in ("JPEG", "JPG"):
+                ext = "JPG"
+            format_counts[ext] = format_counts.get(ext, 0) + 1
+
+            if rec.get("folder_name"):
+                folders.add(rec["folder_name"])
+
+        return {
+            "total_images": total,
+            "format_counts": format_counts,
+            "subfolders_count": len(folders),
+            "subfolders": sorted(list(folders))
+        }
+
+    @staticmethod
     def save_to_json(data: List[Dict[str, Any]], output_json_path: str = "output/image_map.json") -> str:
         """
         Guarda la lista de registros mapeados en un archivo JSON.
@@ -63,7 +110,6 @@ class ImageIndexer:
     ):
         """
         Actualiza el estado del JSON cuando una imagen sea procesada o subida a GCP.
-        Soporta los argumentos 'gcp_url' y 'cloud_url' por compatibilidad.
         """
         path = Path(json_path)
         if not path.exists():

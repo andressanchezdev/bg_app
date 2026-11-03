@@ -53,7 +53,8 @@ class SettingsTabWidget(QWidget):
         lbl_bucket = QLabel("Nombre del Bucket GCP:")
         self.txt_bucket_name = QLineEdit()
         self.txt_bucket_name.setPlaceholderText("ejemplo: mi-bucket-imagenes")
-        self.txt_bucket_name.setText(getattr(config, "GCP_BUCKET_NAME", ""))
+        current_bucket = getattr(config, "GCS_BUCKET_NAME", getattr(config, "GCP_BUCKET_NAME", ""))
+        self.txt_bucket_name.setText(current_bucket)
         bucket_layout.addWidget(lbl_bucket)
         bucket_layout.addWidget(self.txt_bucket_name)
 
@@ -105,7 +106,9 @@ class SettingsTabWidget(QWidget):
     def _save_settings(self):
         """Guarda las configuraciones en el módulo de runtime config."""
         config.CLOUD_UPLOAD_ENABLED = self.chk_cloud_enabled.isChecked()
-        config.GCP_BUCKET_NAME = self.txt_bucket_name.text().strip()
+        bucket_val = self.txt_bucket_name.text().strip()
+        config.GCS_BUCKET_NAME = bucket_val
+        config.GCP_BUCKET_NAME = bucket_val
 
         if config.CLOUD_UPLOAD_ENABLED and not os.path.exists(self.gcp_key_path):
             QMessageBox.warning(
