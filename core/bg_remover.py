@@ -1,6 +1,8 @@
 import os
+import sys
 import threading
 from pathlib import Path
+from typing import Optional
 import numpy as np
 from PIL import Image
 from PySide6.QtCore import QThread, Signal
@@ -24,9 +26,28 @@ _SESSION_INSTANCE = None
 _CV2_DNN_INSTANCE = None
 _DNN_LOCK = threading.Lock()
 
-MODELS_DIR = os.path.join(os.getcwd(), "models")
-DEFAULT_MODEL_PATH = os.path.join(MODELS_DIR, "u2net.onnx")
-LITE_MODEL_PATH = os.path.join(MODELS_DIR, "u2netp.onnx")
+def get_model_path() -> Optional[str]:
+    """Localiza el archivo del modelo ONNX tanto en entorno de desarrollo como en ejecutable empaquetado."""
+    candidates = []
+    if hasattr(sys, "_MEIPASS"):
+        candidates.append(sys._MEIPASS)
+        candidates.append(os.path.join(sys._MEIPASS, "_internal"))
+    if getattr(sys, "frozen", False):
+        exe_dir = os.path.dirname(sys.executable)
+        candidates.append(exe_dir)
+        candidates.append(os.path.join(exe_dir, "_internal"))
+    candidates.append(str(Path(__file__).resolve().parent.parent))
+    candidates.append(os.path.join(str(Path(__file__).resolve().parent.parent), "_internal"))
+    candidates.append(os.getcwd())
+    candidates.append(os.path.join(os.getcwd(), "_internal"))
+
+    for base in candidates:
+        if base and os.path.exists(base):
+            for m_name in ("u2net.onnx", "u2netp.onnx"):
+                p = os.path.join(base, "models", m_name)
+                if os.path.exists(p):
+                    return p
+    return None
 
 
 def get_opencv_dnn_net():
@@ -42,14 +63,10 @@ def get_opencv_dnn_net():
         if not CV2_AVAILABLE:
             return None
 
-        model_path = DEFAULT_MODEL_PATH if os.path.exists(DEFAULT_MODEL_PATH) else LITE_MODEL_PATH
-        if not os.path.exists(model_path):
-            alt_path = os.path.join(Path(__file__).resolve().parent.parent, "models", "u2net.onnx")
-            if os.path.exists(alt_path):
-                model_path = alt_path
-            else:
-                print(f"[Aviso]: No se encontró el modelo neuronal en {model_path}")
-                return None
+        model_path = get_model_path()
+        if not model_path:
+            print("[Aviso]: No se encontró el modelo neuronal U2-Net en ninguna de las rutas esperadas.")
+            return None
 
         try:
             print(f"[IA Motor]: Cargando red neuronal U2-Net desde {model_path}...")
@@ -79,20 +96,74 @@ def get_ai_session(model_name: str = "u2net"):
     return get_opencv_dnn_net()
 
 
-def clean_internal_cavities(orig_rgb: np.ndarray, alpha_pass1: np.ndarray) -> np.ndarray:
+def guided_filter_matting(guide_rgb: np.ndarray, raw_alpha: np.ndarray, radius: int = 3, eps: float = 1e-4) -> np.ndarray:
     """
-    PASO 2: Segundo repaso de limpieza inteligente para partes y cavidades internas.
-    Detecta y elimina fondos atrapados en orificios, asas, entre extremidades y cavidades
-    interiores preservando los detalles y texturas legítimas del producto.
+    Refinamiento de bordes a resolución nativa mediante Filtro Guiado (He et al., TPAMI).
+    Alinea la máscara suave de la IA con los contrastes reales de la imagen RGB original,
+    recuperando detalles finos (tiras, cordones, contornos afilados).
+    """
+    guide_gray = cv2.cvtColor(guide_rgb, cv2.COLOR_RGB2GRAY).astype(np.float32) / 255.0
+    p = raw_alpha.astype(np.float32) / 255.0
+    ksize = (2 * radius + 1, 2 * radius + 1)
+
+    mean_I = cv2.boxFilter(guide_gray, -1, ksize)
+    mean_p = cv2.boxFilter(p, -1, ksize)
+    mean_Ip = cv2.boxFilter(guide_gray * p, -1, ksize)
+    cov_Ip = mean_Ip - mean_I * mean_p
+
+    mean_II = cv2.boxFilter(guide_gray * guide_gray, -1, ksize)
+    var_I = mean_II - mean_I * mean_I
+
+    a = cov_Ip / (var_I + eps)
+    b = mean_p - a * mean_I
+
+    mean_a = cv2.boxFilter(a, -1, ksize)
+    mean_b = cv2.boxFilter(b, -1, ksize)
+
+    q = mean_a * guide_gray + mean_b
+    return np.clip(q * 255.0, 0.0, 255.0).astype(np.uint8)
+
+
+def decontaminate_color_edges(rgb: np.ndarray, alpha: np.ndarray, bg_color: np.ndarray = None) -> np.ndarray:
+    """
+    Descontaminación cromática perimetral (Defringing / Remove Matte).
+    Elimina el sangrado del fondo blanco/estudio en los bordes semitransparentes del producto,
+    restaurando el color puro original sin halos blanquecinos.
+    """
+    alpha_norm = (alpha.astype(np.float32) / 255.0)[:, :, np.newaxis]
+    if bg_color is None:
+        bg_color = np.array([255.0, 255.0, 255.0], dtype=np.float32)
+    else:
+        bg_color = bg_color.astype(np.float32)
+
+    edge_mask = (alpha > 8) & (alpha < 248)
+    clean_rgb = rgb.astype(np.float32)
+
+    if edge_mask.any():
+        weight = np.clip(alpha_norm, 0.25, 1.0)
+        unmixed = (clean_rgb - (1.0 - alpha_norm) * bg_color) / weight
+        clean_rgb = np.where(edge_mask[:, :, np.newaxis], unmixed, clean_rgb)
+
+    # Neutralizar píxeles 100% transparentes para reducir entropía y peso de archivo
+    clean_rgb = np.where((alpha == 0)[:, :, np.newaxis], 0, clean_rgb)
+    return np.clip(clean_rgb, 0.0, 255.0).astype(np.uint8)
+
+
+def clean_internal_cavities(orig_rgb: np.ndarray, alpha_pass1: np.ndarray):
+    """
+    FASE 2: Segundo repaso de limpieza inteligente para partes y cavidades internas.
+    Drena fondos atrapados en ensenadas, entre extremidades, bajo asas y aberturas
+    conectadas al exterior sin dañar prendas, texturas o detalles claros del producto.
+    Retorna la máscara procesada y el color de fondo estimado.
     """
     h, w = orig_rgb.shape[:2]
     bg_mask_exterior = (alpha_pass1 == 0)
+    default_bg = np.array([255.0, 255.0, 255.0], dtype=np.float32)
 
-    # Si no hay suficiente fondo exterior confirmado, retornar máscara base
     if bg_mask_exterior.sum() < 50:
-        return alpha_pass1
+        return alpha_pass1, default_bg
 
-    # 1. Muestrear la firma cromática del fondo confirmado en las 4 esquinas exteriores
+    # 1. Muestrear la firma cromática del fondo en las 4 esquinas exteriores
     corner_h, corner_w = max(5, int(h * 0.06)), max(5, int(w * 0.06))
     corner_mask = np.zeros((h, w), dtype=bool)
     corner_mask[:corner_h, :corner_w] = True
@@ -108,48 +179,37 @@ def clean_internal_cavities(orig_rgb: np.ndarray, alpha_pass1: np.ndarray) -> np
     bg_median = np.median(sample_pixels, axis=0)
     bg_std = np.std(sample_pixels, axis=0)
 
-    # Tolerancia adaptativa según la homogeneidad del fondo de estudio
-    tol = max(22.0, min(36.0, float(np.mean(bg_std) * 2.5 + 20.0)))
+    # Solo si el fondo exterior es relativamente homogéneo (fondo de estudio)
+    if bg_std.mean() < 28.0:
+        dist = np.linalg.norm(orig_rgb.astype(np.float32) - bg_median, axis=2)
+        tol = max(20.0, min(36.0, float(np.mean(bg_std) * 2.5 + 18.0)))
+        is_bg_color = (dist <= tol).astype(np.uint8)
 
-    # 2. Localizar píxeles internos con color idéntico al fondo
-    color_dist = np.linalg.norm(orig_rgb.astype(np.float32) - bg_median, axis=2)
-    is_bg_color = color_dist <= tol
+        # 2. Conectar con el exterior: solo drena áreas donde el fondo penetra desde los bordes
+        num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(is_bg_color, connectivity=8)
+        outer_labels = set(np.unique(np.concatenate([labels[0, :], labels[-1, :], labels[:, 0], labels[:, -1]])))
+        if 0 in outer_labels:
+            outer_labels.remove(0)
 
-    # Zonas marcadas como objeto en Paso 1 que coinciden con el fondo exterior
-    candidate = (alpha_pass1 > 40) & is_bg_color
-    candidate_u8 = candidate.astype(np.uint8) * 255
+        connected_exterior = np.zeros((h, w), dtype=bool)
+        for lab in outer_labels:
+            connected_exterior |= (labels == lab)
 
-    # 3. Apertura morfológica para proteger detalles finos y costuras legítimas
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-    clean_cand = cv2.morphologyEx(candidate_u8, cv2.MORPH_OPEN, kernel)
+        # Cavidades abiertas donde el fondo exterior penetró pero la IA cubrió por error
+        drain_mask = connected_exterior & (alpha_pass1 > 30)
+        if drain_mask.any():
+            feath = cv2.GaussianBlur(drain_mask.astype(np.float32), (3, 3), 0)
+            final_alpha = np.clip(alpha_pass1.astype(np.float32) * (1.0 - feath), 0.0, 255.0).astype(np.uint8)
+            return final_alpha, bg_median
 
-    # 4. Filtrar componentes por área y homogeneidad de textura
-    num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(clean_cand, connectivity=8)
-    cavity_mask = np.zeros((h, w), dtype=np.uint8)
-
-    for i in range(1, num_labels):
-        area = stats[i, cv2.CC_STAT_AREA]
-        # Evitar ruidos microscópicos: solo cavidades con área apreciable (>= 25 px)
-        if area >= 25:
-            comp_pixels = orig_rgb[labels == i]
-            comp_std = np.std(comp_pixels, axis=0).mean()
-            # El fondo de estudio es plano y tiene muy baja varianza textural (< 18.0)
-            if comp_std < 18.0:
-                cavity_mask[labels == i] = 255
-
-    # 5. Suavizado de bordes internos (feathering) para transiciones limpias y orgánicas
-    if cavity_mask.any():
-        feath = cv2.GaussianBlur(cavity_mask.astype(np.float32), (3, 3), 0) / 255.0
-        final_alpha = np.clip(alpha_pass1.astype(np.float32) * (1.0 - feath), 0.0, 255.0).astype(np.uint8)
-        return final_alpha
-
-    return alpha_pass1
+    return alpha_pass1, bg_median
 
 
 def remove_background_neural_u2net(pil_image: Image.Image) -> Image.Image:
     """
     Segmentación semántica profunda utilizando la red neuronal U2-Net con
-    pipeline de dos pasos: silueta exterior + limpieza de cavidades internas.
+    pipeline de dos fases: silueta exterior completa + limpieza de cavidades internas +
+    refinamiento Guided Filter + descontaminación cromática de halos.
     """
     net = get_opencv_dnn_net()
     if net is None:
@@ -195,45 +255,30 @@ def remove_background_neural_u2net(pil_image: Image.Image) -> Image.Image:
     # 5. Escalar máscara a resolución original con interpolación cúbica suave
     mask_full = cv2.resize(norm_mask, (orig_w, orig_h), interpolation=cv2.INTER_CUBIC)
 
-    # 6. PASO 1: Aislamiento al 100% del contorno exterior y silueta
-    # A) Umbral de corte estricto de fondo (elimina ruido tenue < 0.18) y consolidación (> 0.82)
-    t_low = 0.18
-    t_high = 0.82
-    refined_mask = np.clip((mask_full - t_low) / (t_high - t_low), 0.0, 1.0)
+    # 6. FASE 1: Silueta y contorno exterior
+    # Umbral no destructivo que preserva todas las partes del objeto (cabeza, cuerpo, accesorios)
+    alpha_pass1 = np.clip((mask_full - 0.04) / (0.75 - 0.04), 0.0, 1.0)
+    alpha_u8 = (alpha_pass1 * 255.0).astype(np.uint8)
 
-    # B) Supresión de ruido satélite / manchas residuales exteriores mediante componentes conexos
-    bin_mask = (refined_mask > 0.15).astype(np.uint8)
-    num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(bin_mask, connectivity=8)
+    # 7. FASE 2: Segundo repaso para cavidades y partes internas
+    alpha_cav, bg_color = clean_internal_cavities(rgb, alpha_u8)
 
-    total_area = orig_w * orig_h
-    clean_bin_mask = np.zeros_like(bin_mask)
-    for i in range(1, num_labels):
-        area = stats[i, cv2.CC_STAT_AREA]
-        if area >= total_area * 0.008:
-            clean_bin_mask[labels == i] = 1
+    # 8. Refinamiento de bordes a resolución nativa con Filtro Guiado (Guided Filter Matting)
+    alpha_guided = guided_filter_matting(rgb, alpha_cav, radius=3, eps=1e-4)
 
-    # Si ningún componente alcanzó el 0.8%, asegurar conservar el de mayor área
-    if clean_bin_mask.sum() == 0 and num_labels > 1:
-        largest_i = 1 + np.argmax(stats[1:, cv2.CC_STAT_AREA])
-        clean_bin_mask[labels == largest_i] = 1
+    # 9. Descontaminación cromática perimetral (Defringing / Anti-haloing)
+    clean_rgb = decontaminate_color_edges(rgb, alpha_guided, bg_color=bg_color)
 
-    # Máscara exterior del Paso 1
-    pass1_mask = refined_mask * clean_bin_mask
-    alpha_pass1 = (pass1_mask * 255.0).astype(np.uint8)
-
-    # 7. PASO 2: Segundo repaso para cavidades y partes internas
-    alpha_final = clean_internal_cavities(rgb, alpha_pass1)
-
-    # 8. Asignar nuevo canal alfa a la imagen original
-    orig_np[:, :, 3] = alpha_final
-    return Image.fromarray(orig_np, "RGBA")
+    # 10. Composición de la imagen RGBA final
+    out_rgba = np.dstack([clean_rgb, alpha_guided])
+    return Image.fromarray(out_rgba, "RGBA")
 
 
 def process_remove_background(pil_image: Image.Image, session=None) -> Image.Image:
     """
     Punto único de entrada para remoción de fondo con IA.
     Ejecuta rembg si está disponible, o la red neuronal U2-Net profunda vía OpenCV.
-    Aplica el segundo repaso de cavidades internas en ambos casos.
+    Aplica el segundo repaso de cavidades internas y refinamiento de bordes.
     """
     if REMBG_AVAILABLE and remove is not None and session is not None:
         try:
@@ -242,13 +287,15 @@ def process_remove_background(pil_image: Image.Image, session=None) -> Image.Ima
             if arr.shape[2] == 4:
                 rgb = arr[:, :, :3]
                 alpha = arr[:, :, 3]
-                arr[:, :, 3] = clean_internal_cavities(rgb, alpha)
-                return Image.fromarray(arr, "RGBA")
+                alpha_cav, bg_color = clean_internal_cavities(rgb, alpha)
+                alpha_guided = guided_filter_matting(rgb, alpha_cav, radius=3, eps=1e-4)
+                clean_rgb = decontaminate_color_edges(rgb, alpha_guided, bg_color=bg_color)
+                return Image.fromarray(np.dstack([clean_rgb, alpha_guided]), "RGBA")
             return res
         except Exception:
             pass
 
-    # Ejecutar inferencia neuronal U2-Net con dos fases integradas
+    # Ejecutar inferencia neuronal U2-Net con pipeline de alta precisión
     return remove_background_neural_u2net(pil_image)
 
 

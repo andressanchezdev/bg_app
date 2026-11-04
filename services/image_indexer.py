@@ -20,12 +20,13 @@ class ImageIndexer:
 
         for file_path in root_path.rglob("*"):
             if file_path.is_file() and file_path.suffix.lower() in VALID_EXTENSIONS:
-                folder_name = file_path.parent.name
-                
                 try:
-                    rel_path = str(file_path.relative_to(root_path))
+                    rel_p = file_path.relative_to(root_path)
+                    rel_path = str(rel_p)
+                    folder_name = rel_p.parent.as_posix() if rel_p.parent.as_posix() != "." else ""
                 except ValueError:
                     rel_path = file_path.name
+                    folder_name = ""
 
                 image_records.append({
                     "folder_name": folder_name,

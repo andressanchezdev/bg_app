@@ -42,6 +42,13 @@ CREATE TABLE IF NOT EXISTS images (
     processed_at TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS users (
+    id SERIAL PRIMARY KEY, -- o INTEGER PRIMARY KEY AUTOINCREMENT en SQLite
+    username VARCHAR(100) UNIQUE NOT NULL,
+    password VARCHAR(255) NOT NULL,
+    role VARCHAR(50) DEFAULT 'admin',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
 -- 4. Índices para Optimización de Búsqueda y Consultas Rápidas
 CREATE INDEX IF NOT EXISTS idx_images_batch_id ON images(batch_id);
 CREATE INDEX IF NOT EXISTS idx_images_status ON images(status);

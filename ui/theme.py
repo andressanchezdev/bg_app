@@ -34,11 +34,31 @@ FONT_FAMILY_MONO = "'JetBrains Mono', Consolas, 'Courier New', monospace"
 # HOJA DE ESTILOS MAESTRA (GLOBAL STYLESHEET)
 # -----------------------------------------------------------------------------
 GLOBAL_THEME = f"""
-QMainWindow, QDialog, QWidget {{
+QMainWindow, QDialog {{
     background-color: {COLOR_BG_ROOT};
     color: {COLOR_TEXT_PRIMARY};
     font-family: {FONT_FAMILY_BASE};
     font-size: 12px;
+}}
+
+QWidget {{
+    color: {COLOR_TEXT_PRIMARY};
+    font-family: {FONT_FAMILY_BASE};
+    font-size: 12px;
+}}
+
+QWidget#centralWidget {{
+    background-color: {COLOR_BG_ROOT};
+}}
+
+/* --- LABELS Y CONTROLES TRANSPARENTES (SIN FRANJAS OSCURAS) --- */
+QLabel {{
+    background-color: transparent;
+    background: transparent;
+}}
+QCheckBox, QRadioButton {{
+    background-color: transparent;
+    background: transparent;
 }}
 
 /* --- CONTENEDORES Y PANELES --- */
@@ -66,31 +86,37 @@ QFrame#controlPanel {{
 
 /* --- TIPOGRAFÍA SEMÁNTICA (QLabel) --- */
 QLabel#h1 {{
+    background-color: transparent;
     font-size: 17px;
     font-weight: 600;
     color: {COLOR_TEXT_PRIMARY};
 }}
 QLabel#h2 {{
+    background-color: transparent;
     font-size: 14px;
     font-weight: 600;
     color: {COLOR_TEXT_PRIMARY};
 }}
 QLabel#body {{
+    background-color: transparent;
     font-size: 12px;
     color: {COLOR_TEXT_SECONDARY};
 }}
 QLabel#caption {{
+    background-color: transparent;
     font-size: 11px;
     font-family: {FONT_FAMILY_MONO};
     color: {COLOR_TEXT_MUTED};
     letter-spacing: 0.5px;
 }}
 QLabel#metricTitle {{
+    background-color: transparent;
     font-size: 11px;
     font-family: {FONT_FAMILY_MONO};
     color: {COLOR_TEXT_MUTED};
 }}
 QLabel#metricValue {{
+    background-color: transparent;
     font-size: 16px;
     font-family: {FONT_FAMILY_MONO};
     font-weight: 600;
@@ -156,7 +182,7 @@ QPushButton#actionEye {{
     font-size: 13px;
     color: {COLOR_TEXT_PRIMARY};
     min-width: 28px;
-    max-width: 36px;
+    max-width: 34px;
     min-height: 22px;
     max-height: 24px;
 }}
@@ -164,6 +190,40 @@ QPushButton#actionEye:hover {{
     background-color: {COLOR_BG_HOVER};
     border-color: {COLOR_BORDER_HOVER};
     color: #ffffff;
+}}
+QPushButton#actionReload {{
+    background-color: {COLOR_BG_SURFACE};
+    border: 1px solid {COLOR_BORDER_DEFAULT};
+    border-radius: 4px;
+    padding: 2px 6px;
+    font-size: 13px;
+    color: {COLOR_TEXT_PRIMARY};
+    min-width: 28px;
+    max-width: 34px;
+    min-height: 22px;
+    max-height: 24px;
+}}
+QPushButton#actionReload:hover {{
+    background-color: {COLOR_BG_HOVER};
+    border-color: {COLOR_BORDER_HOVER};
+    color: #60a5fa;
+}}
+QPushButton#actionDelete {{
+    background-color: {COLOR_BG_SURFACE};
+    border: 1px solid {COLOR_BORDER_DEFAULT};
+    border-radius: 4px;
+    padding: 2px 6px;
+    font-size: 13px;
+    color: {COLOR_TEXT_PRIMARY};
+    min-width: 28px;
+    max-width: 34px;
+    min-height: 22px;
+    max-height: 24px;
+}}
+QPushButton#actionDelete:hover {{
+    background-color: {COLOR_BG_HOVER};
+    border-color: rgba(248, 113, 113, 0.5);
+    color: {COLOR_STATUS_ERR};
 }}
 QPushButton#homeBtn {{
     background-color: {COLOR_BG_SURFACE};

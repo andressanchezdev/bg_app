@@ -266,10 +266,7 @@ class SingleTabWidget(QWidget):
                     filename = os.path.basename(file_path)
                     
                     # Construir destination_blob_name respetando foldername/photoname
-                    if folder_name:
-                        destination_blob_name = f"{folder_name}/{filename}"
-                    else:
-                        destination_blob_name = filename
+                    destination_blob_name = filename
                     
                     res_url = self.cloud_service.upload_file(
                         file_path,

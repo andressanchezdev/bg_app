@@ -82,13 +82,6 @@ class ImagePreviewDialog(QDialog):
         h_size.addWidget(lbl_size)
         top_bar.addWidget(frame_size)
 
-        # Botón ✕ para cerrar
-        btn_close = QPushButton("✕")
-        btn_close.setObjectName("closeBtn")
-        btn_close.setToolTip("Cerrar")
-        btn_close.clicked.connect(self.accept)
-        top_bar.addWidget(btn_close)
-
         main_layout.addLayout(top_bar)
 
         # ---------------- LIENZO DE VISUALIZACIÓN CON AJEDREZADO ----------------
@@ -110,8 +103,25 @@ class ImagePreviewDialog(QDialog):
         scroll.setWidget(viewport_container)
         main_layout.addWidget(scroll)
 
-        # Pie con nota técnica
-        lbl_footer = QLabel("Lienzo con transparencia alfa verificada · Formato WebP optimizado · Objeto centrado")
+        # Pie con nota técnica según el tipo de fondo
+        has_transparency = True
+        try:
+            with Image.open(self.image_path) as im:
+                if im.mode == "RGB":
+                    has_transparency = False
+                elif im.mode in ("RGBA", "LA"):
+                    extrema = im.getchannel("A").getextrema()
+                    if extrema[0] == 255:
+                        has_transparency = False
+        except Exception:
+            pass
+
+        footer_text = (
+            "Lienzo con transparencia alfa verificada · Formato WebP optimizado · Objeto centrado"
+            if has_transparency
+            else "Lienzo 100% fondo blanco (#FFFFFF) · Formato WebP optimizado · Objeto centrado"
+        )
+        lbl_footer = QLabel(footer_text)
         lbl_footer.setObjectName("caption")
         lbl_footer.setAlignment(Qt.AlignCenter)
         main_layout.addWidget(lbl_footer)

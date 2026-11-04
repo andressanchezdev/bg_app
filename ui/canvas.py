@@ -2,8 +2,19 @@ from PIL import Image
 from PySide6.QtWidgets import QGraphicsView, QGraphicsScene, QGraphicsPixmapItem
 from PySide6.QtCore import Qt, QPointF
 from PySide6.QtGui import (
-    QImage, QPixmap, QPainter, QPen, QColor, QWheelEvent
+    QImage, QPixmap, QPainter, QPen, QColor, QWheelEvent, QBrush
 )
+
+
+def create_checkerboard_pixmap(size=14) -> QPixmap:
+    """Crea un patrón de cuadrícula ajedrezada para evidenciar la transparencia."""
+    pm = QPixmap(size * 2, size * 2)
+    pm.fill(QColor("#16161a"))
+    p = QPainter(pm)
+    p.fillRect(0, 0, size, size, QColor("#1e1e24"))
+    p.fillRect(size, size, size, size, QColor("#1e1e24"))
+    p.end()
+    return pm
 
 
 class MaskEditableCanvas(QGraphicsView):
@@ -12,12 +23,15 @@ class MaskEditableCanvas(QGraphicsView):
         self.scene = QGraphicsScene(self)
         self.setScene(self.scene)
 
+        # Fondo con cuadrícula ajedrezada de transparencia
+        self.scene.setBackgroundBrush(QBrush(create_checkerboard_pixmap(14)))
+
         self.pixmap_item = QGraphicsPixmapItem()
         self.scene.addItem(self.pixmap_item)
 
         # Capas de datos internas
         self.original_rgb = None      # QImage de la imagen RGB
-        self.mask_image = None        # QImage ARGB32/RGBA8888 dedicada exclusivamente a la máscara
+        self.mask_image = None        # QImage ARGB32/RGBA8888 dedicada a la máscara alfa
 
         # Estado del pincel
         self.mode = "NAVIGATE"        # "NAVIGATE", "ERASE", "RESTORE"
@@ -46,19 +60,29 @@ class MaskEditableCanvas(QGraphicsView):
             self.setDragMode(QGraphicsView.NoDrag)
             self.setCursor(Qt.CrossCursor)
 
-    def load_from_pil(self, pil_image: Image.Image):
-        """Carga la imagen de PIL y prepara el lienzo y la máscara."""
+    def load_from_pil(self, pil_image: Image.Image, base_rgb_image: Image.Image = None):
+        """
+        Carga la imagen de PIL y prepara el lienzo y la máscara.
+        Si se pasa base_rgb_image (imagen original sin recortar/sin fondo),
+        se usa como fuente RGB para que el pincel restaurador recupere
+        detalles reales de la foto original.
+        """
         rgba = pil_image.convert("RGBA")
         width, height = rgba.size
 
         # 1. Imagen base RGB
-        rgb_pil = rgba.convert("RGB")
-        rgb_bytes = rgb_pil.tobytes()
+        if base_rgb_image:
+            base_rgb = base_rgb_image.convert("RGB")
+            if base_rgb.size != (width, height):
+                base_rgb = base_rgb.resize((width, height), Image.Resampling.LANCZOS)
+        else:
+            base_rgb = rgba.convert("RGB")
+
+        rgb_bytes = base_rgb.tobytes()
         self.original_rgb = QImage(rgb_bytes, width, height, width * 3, QImage.Format_RGB888).copy()
 
-        # 2. Máscara Alfa (Tratada como ARGB32_Premultiplied para máxima velocidad de renderizado en QPainter)
+        # 2. Máscara Alfa
         alpha_pil = rgba.split()[3]
-        # Creamos una imagen RGBA limpia donde el canal A tiene el valor del alpha
         mask_rgba = Image.new("RGBA", (width, height), (0, 0, 0, 0))
         mask_rgba.paste((255, 255, 255, 255), (0, 0, width, height), mask=alpha_pil)
         

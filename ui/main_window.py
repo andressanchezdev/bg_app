@@ -18,10 +18,12 @@ from core.bg_remover import get_ai_session
 from core.batch_worker import ImageBatchWorker
 from core.image_processor import resize_existing_webp_file
 from services.image_indexer import ImageIndexer
-from services.database import DatabaseService
 from services.cloud_storage import CloudStorageService
 from ui.dialog_settings import SettingsDialog
+from ui.dialog_login import SettingsLoginDialog
 from ui.dialog_preview import ImagePreviewDialog
+from ui.dialog_batch_config import BatchProcessConfigDialog
+from ui.dialog_touchup import ImageTouchupDialog
 from ui.theme import GLOBAL_THEME
 
 
@@ -34,8 +36,7 @@ class MainWindow(QMainWindow):
         self.setAcceptDrops(True)
         self.setStyleSheet(GLOBAL_THEME)
 
-        # 1. Servicios del Sistema
-        self.db_service = DatabaseService()
+        # 1. Servicios del Sistema (Sin Base de Datos Local)
         self.ai_session = get_ai_session()
         self.thread_pool = QThreadPool.globalInstance()
         self.thread_pool.setMaxThreadCount(2)
@@ -48,11 +49,20 @@ class MainWindow(QMainWindow):
         self.current_batch_id: int = 0
         self.completed_count: int = 0
         self.processed_files: List[str] = []
+        self.batch_config: Dict[str, Any] = {
+            "white_bg": False,
+            "quality": getattr(config, "DEFAULT_WEBP_QUALITY", 90),
+            "resize_enabled": True,
+            "target_width": 900,
+            "target_height": 900,
+            "resize_mode": "contain"
+        }
 
         self._init_ui()
 
     def _init_ui(self):
         central_widget = QWidget()
+        central_widget.setObjectName("centralWidget")
         main_layout = QVBoxLayout(central_widget)
         main_layout.setContentsMargins(24, 16, 24, 16)
         main_layout.setSpacing(16)
@@ -239,11 +249,13 @@ class MainWindow(QMainWindow):
 
         self.box_total = self._create_metric_box("Total de imágenes", "0 archivos")
         self.box_subfolders = self._create_metric_box("Subdirectorios", "0 carpetas")
-        self.box_mode = self._create_metric_box("Formato de destino", "WebP transparente")
+        self.box_mode = self._create_metric_box("Fondo de salida", "WebP transparente")
+        self.box_quality = self._create_metric_box("Calidad WebP", "90%")
 
         stats_layout.addWidget(self.box_total)
         stats_layout.addWidget(self.box_subfolders)
         stats_layout.addWidget(self.box_mode)
+        stats_layout.addWidget(self.box_quality)
         layout.addLayout(stats_layout)
 
         # Desglose de extensiones
@@ -269,6 +281,12 @@ class MainWindow(QMainWindow):
 
         actions_layout.addStretch()
 
+        btn_config = QPushButton("⚙ Opciones de procesamiento")
+        btn_config.setToolTip("Configurar fondo blanco, calidad WebP y medidas")
+        btn_config.setCursor(Qt.PointingHandCursor)
+        btn_config.clicked.connect(self._open_batch_config_dialog)
+        actions_layout.addWidget(btn_config)
+
         btn_start = QPushButton("Retirar fondo")
         btn_start.setObjectName("primaryBtn")
         btn_start.clicked.connect(self._start_processing)
@@ -276,6 +294,24 @@ class MainWindow(QMainWindow):
 
         layout.addLayout(actions_layout)
         self.stack.addWidget(page)
+
+    def _open_batch_config_dialog(self):
+        total = len(self.current_records) if self.current_records else 0
+        dlg = BatchProcessConfigDialog(
+            initial_config=self.batch_config,
+            total_images=total,
+            parent=self
+        )
+        if dlg.exec():
+            self.batch_config = dlg.get_config()
+            self._update_step2_config_ui()
+
+    def _update_step2_config_ui(self):
+        if hasattr(self, "box_mode") and hasattr(self.box_mode, "val_label"):
+            mode_text = "Fondo blanco (#FFF)" if self.batch_config.get("white_bg", False) else "WebP transparente"
+            self.box_mode.val_label.setText(mode_text)
+        if hasattr(self, "box_quality") and hasattr(self.box_quality, "val_label"):
+            self.box_quality.val_label.setText(f"{self.batch_config.get('quality', 90)}%")
 
     def _create_metric_box(self, label_text: str, value_text: str) -> QFrame:
         box = QFrame()
@@ -423,7 +459,7 @@ class MainWindow(QMainWindow):
         self.table_delivery = QTableWidget()
         self.table_delivery.setColumnCount(5)
         self.table_delivery.setHorizontalHeaderLabels([
-            "Subcarpeta", "Archivo Salida", "Medidas", "Peso", "Vista previa"
+            "Subcarpeta", "Archivo Salida", "Medidas", "Peso", "Acciones"
         ])
         self.table_delivery.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
         self.table_delivery.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
@@ -459,8 +495,10 @@ class MainWindow(QMainWindow):
     # LÓGICA DE CONTROL Y NAVEGACIÓN
     # =========================================================================
     def _open_settings_dialog(self):
-        dlg = SettingsDialog(db_service=self.db_service, parent=self)
-        dlg.exec()
+        login_dlg = SettingsLoginDialog(parent=self)
+        if login_dlg.exec():
+            dlg = SettingsDialog(parent=self)
+            dlg.exec()
 
     def _browse_directory(self):
         folder = QFileDialog.getExistingDirectory(self, "Seleccionar Directorio de Imágenes")
@@ -504,11 +542,15 @@ class MainWindow(QMainWindow):
         self.lbl_origin_path.setText(origin_label)
         self.box_total.val_label.setText(f"{self.current_summary['total_images']} archivos")
         self.box_subfolders.val_label.setText(f"{self.current_summary['subfolders_count']} carpetas")
+        self._update_step2_config_ui()
 
         breakdown_parts = [f"{k}: {v}" for k, v in self.current_summary["format_counts"].items()]
         self.lbl_format_breakdown.setText(" · ".join(breakdown_parts))
 
         self.stack.setCurrentIndex(1)
+
+        # Abrir modal de configuración pre-procesamiento para que el usuario elija sus opciones
+        self._open_batch_config_dialog()
 
     def _handle_home(self, confirm_if_running=True):
         """
@@ -536,6 +578,14 @@ class MainWindow(QMainWindow):
         self.current_batch_id = 0
         self.completed_count = 0
         self.processed_files.clear()
+        self.batch_config = {
+            "white_bg": False,
+            "quality": getattr(config, "DEFAULT_WEBP_QUALITY", 90),
+            "resize_enabled": True,
+            "target_width": 900,
+            "target_height": 900,
+            "resize_mode": "contain"
+        }
 
         # 3. Limpiar tablas e indicadores visuales
         self.table_process.setRowCount(0)
@@ -577,10 +627,10 @@ class MainWindow(QMainWindow):
         self.current_output_dir = os.path.join(os.getcwd(), "output", "processed")
         os.makedirs(self.current_output_dir, exist_ok=True)
 
-        # Crear Lote en Base de Datos Local
-        self.current_batch_id = self.db_service.create_batch(
-            input_path=self.current_input_root,
-            total_images=total
+        # Inicializar manifiesto JSON de mapeo y rutas (Consumo GCP)
+        ImageIndexer.save_to_json(
+            self.current_records,
+            os.path.join(self.current_output_dir, "image_map.json")
         )
 
         # Poblado inicial de la tabla de ejecución
@@ -592,28 +642,88 @@ class MainWindow(QMainWindow):
             self.table_process.setItem(row, 2, QTableWidgetItem(f"{stem}.webp"))
             self.table_process.setItem(row, 3, QTableWidgetItem("En espera"))
 
-            self.db_service.record_image_start(self.current_batch_id, rec)
-
         self.stack.setCurrentIndex(2)
 
-        # Despachar workers al ThreadPool
+        # Validar destino en GCP si se activó subida durante el proceso
+        upload_to_gcs = self.batch_config.get("upload_to_gcs", False)
+        gcp_service = None
+        existing_folders = []
+
+        if upload_to_gcs:
+            gcp_key = getattr(config, "GCS_CREDENTIALS_PATH", "")
+            if not gcp_key or not os.path.exists(gcp_key):
+                gcp_key = config.resolve_credentials_path()
+
+            bucket_name = getattr(config, "GCS_BUCKET_NAME", "importadorapremiumonline")
+            base_folder = getattr(config, "GCS_BASE_FOLDER", "dependencias/img/productos/")
+
+            if os.path.exists(gcp_key) and bucket_name:
+                gcp_service = CloudStorageService(
+                    bucket_name=bucket_name,
+                    credentials_path=gcp_key,
+                    base_folder=base_folder
+                )
+                conn = gcp_service.test_connection()
+                if conn["ok"]:
+                    existing_folders = gcp_service.get_existing_folders()
+                else:
+                    QMessageBox.warning(self, "Error de Conexión GCP", f"No se pudo conectar a Google Cloud Storage:\n\n{conn.get('message', '')}\n\nLas imágenes se procesarán únicamente de forma local.")
+                    upload_to_gcs = False
+                    gcp_service = None
+            else:
+                QMessageBox.warning(self, "Credenciales no encontradas", "No se encontró el archivo 'gcp_key.json' de Google Cloud Storage.\n\nVerifica que esté en tu Escritorio o en la carpeta 'credentials/'.\nLas imágenes se procesarán únicamente de forma local.")
+                upload_to_gcs = False
+
+        # Despachar workers al ThreadPool con la configuración elegida por el usuario
+        white_bg = self.batch_config.get("white_bg", False)
+        quality = self.batch_config.get("quality", 90)
+        resize_cfg = {
+            "enabled": self.batch_config.get("resize_enabled", True),
+            "width": self.batch_config.get("target_width", 900),
+            "height": self.batch_config.get("target_height", 900),
+            "mode": self.batch_config.get("resize_mode", "contain")
+        }
+
+        rejected_folders = set()
+
         for rec in self.current_records:
             fpath = rec["absolute_path"]
-            folder_name = rec.get("folder_name", "")
+            f_name = rec.get("folder_name", "")
 
-            target_out_dir = os.path.join(self.current_output_dir, folder_name) if folder_name else self.current_output_dir
+            # Si no hay folder_name pero se cargó un directorio con nombre coincidente
+            if not f_name and self.current_input_root and os.path.isdir(self.current_input_root):
+                root_name = os.path.basename(self.current_input_root)
+                for ef in existing_folders:
+                    if ef.lower() == root_name.lower():
+                        f_name = ef
+                        break
+
+            target_subfolder = ""
+            can_upload_item = False
+
+            if upload_to_gcs and gcp_service:
+                val = gcp_service.validate_image_target(f_name, rec.get("filename", ""), existing_folders)
+                if val["valid"]:
+                    target_subfolder = val["target_subfolder"]
+                    can_upload_item = True
+                else:
+                    item_desc = f_name if f_name else f"suelta ({rec.get('filename')})"
+                    rejected_folders.add(item_desc)
+
+            rec["target_subfolder"] = target_subfolder
+            target_out_dir = self.current_output_dir
 
             worker = ImageBatchWorker(
                 file_path=fpath,
                 output_dir=target_out_dir,
                 session=self.ai_session,
-                quality=getattr(config, "DEFAULT_WEBP_QUALITY", 85),
+                quality=quality,
                 remove_bg=True,
-                white_bg=False,
-                resize_config={"enabled": True, "width": 900, "height": 900, "mode": "contain"},
-                upload_to_cloud=False,
-                db_service=self.db_service,
-                batch_id=self.current_batch_id
+                white_bg=white_bg,
+                resize_config=resize_cfg,
+                upload_to_cloud=can_upload_item,
+                cloud_service=gcp_service if can_upload_item else None,
+                target_subfolder=target_subfolder
             )
 
             worker.signals.started.connect(self._on_worker_started)
@@ -622,6 +732,16 @@ class MainWindow(QMainWindow):
             worker.signals.error.connect(self._on_worker_error)
 
             self.thread_pool.start(worker)
+
+        if rejected_folders:
+            base_folder = getattr(config, "GCS_BASE_FOLDER", "dependencias/img/productos/")
+            QMessageBox.warning(
+                self,
+                "Control de Contenido GCP",
+                f"Las siguientes carpetas no existen en '{base_folder}':\n"
+                f"{(', '.join(list(rejected_folders)[:15]) + '... (' + str(len(rejected_folders)) + ' en total)') if len(rejected_folders) > 15 else ', '.join(rejected_folders)}\n\n"
+                f"Sus imágenes se procesarán localmente pero NO se subirán a GCP para evitar crear carpetas no autorizadas."
+            )
 
     def _find_process_row(self, file_path: str) -> int:
         fname = os.path.basename(file_path)
@@ -657,6 +777,25 @@ class MainWindow(QMainWindow):
         total = len(self.current_records)
         pct = int((self.completed_count / total) * 100) if total else 0
 
+        # Actualizar registro y manifiesto JSON
+        base_stem = Path(origin_path).stem
+        for r in self.current_records:
+            if Path(r["filename"]).stem == base_stem:
+                r["processed"] = True
+                r["processed_path"] = output_webp_path
+                if cloud_url:
+                    r["cloud_url"] = cloud_url
+                break
+
+        out_json_path = os.path.join(self.current_output_dir, "image_map.json")
+        ImageIndexer.update_json_record(
+            json_path=out_json_path,
+            absolute_path=origin_path,
+            processed_path=output_webp_path,
+            cloud_url=cloud_url if cloud_url else None,
+            processed=True
+        )
+
         self.progress_bar.setValue(self.completed_count)
         self.lbl_progress_counter.setText(f"{self.completed_count} de {total} ({pct}%)")
 
@@ -687,12 +826,14 @@ class MainWindow(QMainWindow):
     # =========================================================================
     def _populate_delivery_view(self):
         total = len(self.current_records)
+        count = len(self.processed_files)
+        bg_desc = "fondo blanco" if self.batch_config.get("white_bg", False) else "fondo transparente"
         self.lbl_delivery_desc.setText(
-            f"{len(self.processed_files)} de {total} imágenes listas con fondo transparente.\n"
-            "Confirma o ajusta las medidas (ej: 900×900) y visualiza cualquier archivo haciendo clic en el icono 👁."
+            f"{count} de {total} imágenes listas con {bg_desc}.\n"
+            "Acciones: Vista previa (👁) · Retocar / Re-procesar con pincel o IA (🔄) · Retirar (🗑)"
         )
 
-        self.table_delivery.setRowCount(len(self.processed_files))
+        self.table_delivery.setRowCount(count)
 
         for row, out_path in enumerate(self.processed_files):
             folder_name = Path(out_path).parent.name
@@ -707,19 +848,71 @@ class MainWindow(QMainWindow):
             self.table_delivery.setItem(row, 2, QTableWidgetItem(f"{w} × {h} px"))
             self.table_delivery.setItem(row, 3, QTableWidgetItem(f"{size_kb:.1f} KB"))
 
-            # Botón de icono de ojito estandarizado
+            # Contenedor de 3 botones de acción estandarizados
+            cell_widget = QWidget()
+            cell_layout = QHBoxLayout(cell_widget)
+            cell_layout.setContentsMargins(4, 2, 4, 2)
+            cell_layout.setSpacing(6)
+            cell_layout.setAlignment(Qt.AlignCenter)
+
             btn_eye = QPushButton("👁")
             btn_eye.setObjectName("actionEye")
-            btn_eye.setToolTip("Visualizar imagen sin fondo")
+            btn_eye.setToolTip("Vista previa con transparencia")
             btn_eye.setCursor(Qt.PointingHandCursor)
             btn_eye.clicked.connect(lambda checked=False, p=out_path: self._show_preview_dialog(p))
 
-            cell_widget = QWidget()
-            cell_layout = QHBoxLayout(cell_widget)
-            cell_layout.setContentsMargins(0, 0, 0, 0)
-            cell_layout.setAlignment(Qt.AlignCenter)
+            btn_reload = QPushButton("🔄")
+            btn_reload.setObjectName("actionReload")
+            btn_reload.setToolTip("Retocar y re-procesar (pincel, borrador, IA)")
+            btn_reload.setCursor(Qt.PointingHandCursor)
+            btn_reload.clicked.connect(lambda checked=False, p=out_path: self._show_touchup_dialog(p))
+
+            btn_delete = QPushButton("🗑")
+            btn_delete.setObjectName("actionDelete")
+            btn_delete.setToolTip("Retirar de la lista de procesadas")
+            btn_delete.setCursor(Qt.PointingHandCursor)
+            btn_delete.clicked.connect(lambda checked=False, p=out_path: self._handle_remove_item(p))
+
             cell_layout.addWidget(btn_eye)
+            cell_layout.addWidget(btn_reload)
+            cell_layout.addWidget(btn_delete)
             self.table_delivery.setCellWidget(row, 4, cell_widget)
+
+    def _show_touchup_dialog(self, out_path: str):
+        base_stem = Path(out_path).stem
+        orig_path = None
+        for rec in self.current_records:
+            if Path(rec["filename"]).stem == base_stem:
+                orig_path = rec["absolute_path"]
+                break
+
+        dlg = ImageTouchupDialog(
+            processed_path=out_path,
+            original_path=orig_path,
+            ai_session=self.ai_session,
+            white_bg=self.batch_config.get("white_bg", False),
+            quality=self.batch_config.get("quality", 90),
+            target_w=self.spin_width.value(),
+            target_h=self.spin_height.value(),
+            resize_mode=self.combo_mode.currentData() or "contain",
+            parent=self
+        )
+        if dlg.exec():
+            self._populate_delivery_view()
+
+    def _handle_remove_item(self, out_path: str):
+        fname = os.path.basename(out_path)
+        reply = QMessageBox.question(
+            self,
+            "Retirar Imagen",
+            f"¿Deseas retirar '{fname}' de la lista de procesadas?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+        if reply == QMessageBox.Yes:
+            if out_path in self.processed_files:
+                self.processed_files.remove(out_path)
+            self._populate_delivery_view()
 
     def _get_file_info(self, file_path: str):
         w, h, size_kb = 0, 0, 0.0
@@ -753,11 +946,20 @@ class MainWindow(QMainWindow):
         w = self.spin_width.value()
         h = self.spin_height.value()
         mode = self.combo_mode.currentData() or "contain"
+        white_bg = self.batch_config.get("white_bg", False)
+        quality = self.batch_config.get("quality", 90)
 
         count = 0
         for out_path in self.processed_files:
             try:
-                resize_existing_webp_file(out_path, target_width=w, target_height=h, mode=mode)
+                resize_existing_webp_file(
+                    out_path,
+                    target_width=w,
+                    target_height=h,
+                    mode=mode,
+                    quality=quality,
+                    white_bg=white_bg
+                )
                 count += 1
             except Exception as e:
                 print(f"[Error redimensionando {out_path}]: {e}")
@@ -794,13 +996,6 @@ class MainWindow(QMainWindow):
                 else:
                     shutil.copy2(s, d)
 
-            self.db_service.finish_batch(
-                batch_id=self.current_batch_id,
-                processed_count=len(self.processed_files),
-                destination_type="local",
-                destination_path=dest_folder
-            )
-
             QMessageBox.information(
                 self,
                 "Descarga Local Completada",
@@ -812,12 +1007,17 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Error", f"No se pudieron copiar los archivos:\n{e}")
 
     def _handle_gcp_upload(self):
-        gcp_key = os.path.join(os.getcwd(), "credentials", "gcp_key.json")
+        gcp_key = getattr(config, "GCS_CREDENTIALS_PATH", os.path.join(os.getcwd(), "credentials", "gcp_key.json"))
+        if not os.path.exists(gcp_key):
+            candidate = os.path.join(os.path.dirname(sys.executable), "credentials", "gcp_key.json")
+            if os.path.exists(candidate):
+                gcp_key = candidate
+
         if not os.path.exists(gcp_key):
             reply = QMessageBox.question(
                 self,
                 "Credenciales GCP Faltantes",
-                "No se encontró el archivo 'credentials/gcp_key.json'.\n\n"
+                "No se encontró el archivo de credenciales de Google Cloud ('credentials/gcp_key.json').\n\n"
                 "¿Deseas abrir la Configuración para importar las credenciales ahora?",
                 QMessageBox.Yes | QMessageBox.No
             )
@@ -825,8 +1025,8 @@ class MainWindow(QMainWindow):
                 self._open_settings_dialog()
             return
 
-        bucket_name = self.db_service.get_setting("gcs_bucket_name", getattr(config, "GCS_BUCKET_NAME", ""))
-        base_folder = self.db_service.get_setting("gcs_base_folder", getattr(config, "GCS_BASE_FOLDER", ""))
+        bucket_name = getattr(config, "GCS_BUCKET_NAME", "importadorapremiumonline")
+        base_folder = getattr(config, "GCS_BASE_FOLDER", "dependencias/img/productos/")
 
         if not bucket_name:
             QMessageBox.warning(self, "Bucket no configurado", "Debes definir el nombre del bucket en Configuración.")
@@ -848,39 +1048,74 @@ class MainWindow(QMainWindow):
             )
             return
 
+        # 1. Obtener carpetas existentes en el bucket bajo base_folder
+        existing_folders = gcp_service.get_existing_folders()
+
         uploaded_urls = []
+        rejected_files = {}
         errors = 0
 
         for fpath in self.processed_files:
-            rel_name = os.path.relpath(fpath, self.current_output_dir).replace("\\", "/")
-            url = gcp_service.upload_file(fpath, destination_blob_name=rel_name, make_public=True)
+            base_stem = Path(fpath).stem
+            rec_found = None
+            for orig in self.current_records:
+                if Path(orig["filename"]).stem == base_stem:
+                    rec_found = orig
+                    break
+
+            folder_candidate = ""
+            if rec_found and rec_found.get("folder_name"):
+                folder_candidate = rec_found["folder_name"]
+            elif self.current_input_root and os.path.isdir(self.current_input_root):
+                root_name = os.path.basename(self.current_input_root)
+                for ef in existing_folders:
+                    if ef.lower() == root_name.lower():
+                        folder_candidate = ef
+                        break
+
+            # 2. Validar contra el Bucket (subcarpeta coincidente o imagen suelta con nombre coincidente)
+            fname_curr = os.path.basename(fpath)
+            val = gcp_service.validate_image_target(folder_candidate, fname_curr, existing_folders)
+            if not val["valid"]:
+                rej_key = folder_candidate if folder_candidate else f"Imagen suelta '{fname_curr}'"
+                rejected_files.setdefault(rej_key, []).append((fname_curr, val["reason"]))
+                continue
+
+            target_sub = val["target_subfolder"]
+            blob_name = fname_curr
+
+            url = gcp_service.upload_file(
+                fpath,
+                destination_blob_name=blob_name,
+                subfolder=target_sub,
+                make_public=True
+            )
             if url:
                 uploaded_urls.append(url)
-                base_stem = Path(fpath).stem
-                for orig in self.current_records:
-                    if Path(orig["filename"]).stem == base_stem:
-                        self.db_service.update_image_success(orig["absolute_path"], fpath, cloud_url=url)
-                        break
+                if rec_found:
+                    rec_found["cloud_url"] = url
+                    rec_found["processed"] = True
             else:
                 errors += 1
 
-        self.db_service.finish_batch(
-            batch_id=self.current_batch_id,
-            processed_count=len(uploaded_urls),
-            destination_type="gcp",
-            destination_path=f"gs://{bucket_name}/{base_folder}"
-        )
-
+        # 3. Guardar mapa manifiesto JSON con las URLs de GCP
         out_json = ImageIndexer.save_to_json(
             self.current_records,
             os.path.join(self.current_output_dir, "image_map.json")
         )
 
-        msg = (
-            f"Se subieron {len(uploaded_urls)} imágenes al bucket '{bucket_name}'.\n\n"
-            f"Registro JSON generado en:\n{out_json}"
-        )
+        # 4. Mensaje con informe completo de validación y subida
+        msg_parts = [f"✅ Se subieron {len(uploaded_urls)} imágenes a Google Cloud Storage."]
+        if rejected_files:
+            msg_parts.append("\n⚠️ ARCHIVOS BLOQUEADOS POR REGLA DE CARPETA:")
+            for c_name, flist in rejected_files.items():
+                msg_parts.append(f" • {c_name}: {len(flist)} archivo(s) no coinciden con ninguna carpeta de GCP.")
+            msg_parts.append(
+                f"\nRegla: Las imágenes en carpetas deben coincidir con una carpeta del bucket. Las imágenes sueltas deben llamarse igual que una carpeta existente en '{base_folder}'.\n"
+                f"Total carpetas registradas en GCP: {len(existing_folders)} (ej: {', '.join(existing_folders[:6])}...)"
+            )
         if errors > 0:
-            msg += f"\n\nNota: {errors} archivos fallaron al subir."
+            msg_parts.append(f"\n❌ {errors} archivos tuvieron error de red al subir.")
 
-        QMessageBox.information(self, "Sincronización GCP Finalizada", msg)
+        msg_parts.append(f"\n\nManifiesto de rutas generado en:\n{out_json}")
+        QMessageBox.information(self, "Control de Contenido GCP", "\n".join(msg_parts))

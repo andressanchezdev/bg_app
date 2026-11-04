@@ -1,12 +1,11 @@
 import os
 from pathlib import Path
-from PIL import Image
+from PIL import Image, ImageOps
 from PySide6.QtCore import QObject, QRunnable, Signal
 
 from core.image_processor import export_to_webp
 from core.bg_remover import process_remove_background
 from services.cloud_storage import CloudStorageService
-from services.database import DatabaseService
 
 
 class WorkerSignals(QObject):
@@ -25,12 +24,11 @@ class ImageBatchWorker(QRunnable):
         session=None,
         quality: int = 85,
         remove_bg: bool = True,
-        white_bg: bool = False,       # PRIORIDAD: Fondo transparente (sin relleno blanco)
+        white_bg: bool = False,
         resize_config: dict = None,
         upload_to_cloud: bool = False,
         cloud_service: CloudStorageService = None,
-        db_service: DatabaseService = None,
-        batch_id: int = None
+        target_subfolder: str = ""
     ):
         super().__init__()
         self.file_path = file_path
@@ -42,8 +40,7 @@ class ImageBatchWorker(QRunnable):
         self.resize_config = resize_config
         self.upload_to_cloud = upload_to_cloud
         self.cloud_service = cloud_service
-        self.db_service = db_service
-        self.batch_id = batch_id
+        self.target_subfolder = target_subfolder
         self.signals = WorkerSignals()
 
     def run(self):
@@ -51,25 +48,17 @@ class ImageBatchWorker(QRunnable):
             self.signals.started.emit(self.file_path)
             self.signals.progress.emit(self.file_path, "Cargando...")
 
-            # Soporte HEIC/HEIF y formatos convencionales
-            pil_img = Image.open(self.file_path).convert("RGBA")
+            raw_img = Image.open(self.file_path)
+            pil_img = ImageOps.exif_transpose(raw_img).convert("RGBA")
 
             if self.remove_bg:
-                self.signals.progress.emit(self.file_path, "Aislando objeto...")
+                self.signals.progress.emit(self.file_path, "Aislando objeto (Fase 1 y 2)...")
                 pil_img = process_remove_background(pil_img, session=self.session)
 
-                # Si el usuario solicitara explícitamente fondo blanco
-                if self.white_bg and pil_img.mode in ("RGBA", "LA"):
-                    self.signals.progress.emit(self.file_path, "Rellenando fondo blanco...")
-                    background = Image.new("RGB", pil_img.size, (255, 255, 255))
-                    background.paste(pil_img, mask=pil_img.split()[3])
-                    pil_img = background
-
-            self.signals.progress.emit(self.file_path, "Optimizando WebP...")
-            base_name = Path(self.file_path).stem  # Mismo nombre exacto sin la extensión vieja
+            self.signals.progress.emit(self.file_path, "Renderizando y optimizando WebP...")
+            base_name = Path(self.file_path).stem
             
             os.makedirs(self.output_dir, exist_ok=True)
-            # Salida con el mismo nombre exacto pero extensión .webp
             output_webp_path = os.path.join(self.output_dir, f"{base_name}.webp")
 
             export_to_webp(
@@ -77,7 +66,8 @@ class ImageBatchWorker(QRunnable):
                 output_path=output_webp_path,
                 quality=self.quality,
                 method=6,
-                resize_config=self.resize_config
+                resize_config=self.resize_config,
+                white_bg=self.white_bg
             )
 
             cloud_url = ""
@@ -88,29 +78,14 @@ class ImageBatchWorker(QRunnable):
                 res_url = self.cloud_service.upload_file(
                     output_webp_path, 
                     destination_blob_name=destination_blob_name,
+                    subfolder=self.target_subfolder,
                     make_public=True
                 )
                 if res_url:
                     cloud_url = res_url
 
-            # Registrar éxito en base de datos local
-            if self.db_service:
-                try:
-                    self.db_service.update_image_success(
-                        original_path=self.file_path,
-                        processed_path=output_webp_path,
-                        cloud_url=cloud_url if cloud_url else None
-                    )
-                except Exception as e:
-                    print(f"[DB Warning]: {e}")
-
             self.signals.finished.emit(self.file_path, output_webp_path, cloud_url)
 
         except Exception as e:
             err_str = str(e)
-            if self.db_service:
-                try:
-                    self.db_service.update_image_error(self.file_path, err_str)
-                except Exception:
-                    pass
             self.signals.error.emit(self.file_path, err_str)

@@ -202,6 +202,15 @@ class BatchTabWidget(QWidget):
         white_bg = self.chk_white_bg.isChecked()
         upload_to_cloud = self.chk_upload_gcs.isChecked()
 
+        existing_folders = []
+        if upload_to_cloud and self.cloud_service:
+            conn = self.cloud_service.test_connection()
+            if conn.get('ok'):
+                existing_folders = self.cloud_service.get_existing_folders()
+            else:
+                QMessageBox.warning(self, 'Aviso GCP', conn.get('message', ''))
+                upload_to_cloud = False
+
         for fpath in self.batch_file_list:
             rec = self.records_map.get(fpath, {})
             folder_name = rec.get("folder_name", "")
@@ -209,6 +218,14 @@ class BatchTabWidget(QWidget):
             # Respetar subcarpeta local si existe
             target_dir = os.path.join(self.batch_output_dir, folder_name) if folder_name else self.batch_output_dir
             os.makedirs(target_dir, exist_ok=True)
+
+            target_subfolder = ''
+            can_upload_item = False
+            if upload_to_cloud and self.cloud_service:
+                val = self.cloud_service.validate_image_target(folder_name, rec.get('filename', ''), existing_folders)
+                if val.get('valid'):
+                    target_subfolder = val.get('target_subfolder', '')
+                    can_upload_item = True
 
             worker = ImageBatchWorker(
                 file_path=fpath,
@@ -218,8 +235,9 @@ class BatchTabWidget(QWidget):
                 remove_bg=remove_bg,
                 white_bg=white_bg,
                 resize_config=resize_cfg,
-                upload_to_cloud=upload_to_cloud,
-                cloud_service=self.cloud_service if upload_to_cloud else None
+                upload_to_cloud=can_upload_item,
+                cloud_service=self.cloud_service if can_upload_item else None,
+                target_subfolder=target_subfolder
             )
 
             worker.signals.started.connect(self._on_item_started)
