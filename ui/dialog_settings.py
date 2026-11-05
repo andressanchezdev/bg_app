@@ -71,21 +71,21 @@ class SettingsDialog(QDialog):
         gcp_grid = QGridLayout()
         gcp_grid.setSpacing(8)
 
-        lbl_bucket = QLabel("Nombre del Bucket:")
+        lbl_bucket = QLabel("Bucket Name:")
         lbl_bucket.setObjectName("body")
         gcp_grid.addWidget(lbl_bucket, 0, 0)
         self.txt_bucket = QLineEdit()
         self.txt_bucket.setPlaceholderText("ej: importadorapremiumonline")
         gcp_grid.addWidget(self.txt_bucket, 0, 1)
 
-        lbl_folder = QLabel("Carpeta Base Destino:")
+        lbl_folder = QLabel("Base Folder:")
         lbl_folder.setObjectName("body")
         gcp_grid.addWidget(lbl_folder, 1, 0)
         self.txt_base_folder = QLineEdit()
         self.txt_base_folder.setPlaceholderText("ej: dependencias/img/productos/")
         gcp_grid.addWidget(self.txt_base_folder, 1, 1)
 
-        lbl_cred = QLabel("Clave JSON de Cuenta:")
+        lbl_cred = QLabel("Clave JSON:")
         lbl_cred.setObjectName("body")
         gcp_grid.addWidget(lbl_cred, 2, 0)
 
@@ -131,16 +131,16 @@ class SettingsDialog(QDialog):
         db_grid = QGridLayout()
         db_grid.setSpacing(8)
 
-        # Host
-        lbl_host = QLabel("Servidor (Host):")
+        # DB Host
+        lbl_host = QLabel("DB Host:")
         lbl_host.setObjectName("body")
         db_grid.addWidget(lbl_host, 0, 0)
         self.txt_db_host = QLineEdit()
         self.txt_db_host.setPlaceholderText("localhost o 127.0.0.1")
         db_grid.addWidget(self.txt_db_host, 0, 1)
 
-        # Puerto
-        lbl_port = QLabel("Puerto:")
+        # DB Port
+        lbl_port = QLabel("DB Port:")
         lbl_port.setObjectName("body")
         db_grid.addWidget(lbl_port, 0, 2)
         self.spin_db_port = QSpinBox()
@@ -148,32 +148,32 @@ class SettingsDialog(QDialog):
         self.spin_db_port.setValue(5432)
         db_grid.addWidget(self.spin_db_port, 0, 3)
 
-        # Base de datos
-        lbl_dbname = QLabel("Base de Datos:")
+        # DB Name
+        lbl_dbname = QLabel("DB Name:")
         lbl_dbname.setObjectName("body")
         db_grid.addWidget(lbl_dbname, 1, 0)
         self.txt_db_name = QLineEdit()
         self.txt_db_name.setPlaceholderText("ej: Images o Imagenes")
         db_grid.addWidget(self.txt_db_name, 1, 1)
 
-        # Tabla destino
-        lbl_tbl = QLabel("Tabla Destino:")
+        # DB Table
+        lbl_tbl = QLabel("DB Table:")
         lbl_tbl.setObjectName("body")
         db_grid.addWidget(lbl_tbl, 1, 2)
         self.txt_db_table = QLineEdit()
         self.txt_db_table.setPlaceholderText("ej: images o productos")
         db_grid.addWidget(self.txt_db_table, 1, 3)
 
-        # Usuario
-        lbl_user = QLabel("Usuario:")
+        # DB User
+        lbl_user = QLabel("DB User:")
         lbl_user.setObjectName("body")
         db_grid.addWidget(lbl_user, 2, 0)
         self.txt_db_user = QLineEdit()
         self.txt_db_user.setPlaceholderText("postgres")
         db_grid.addWidget(self.txt_db_user, 2, 1)
 
-        # Contraseña
-        lbl_pass = QLabel("Contraseña:")
+        # DB Password
+        lbl_pass = QLabel("DB Password:")
         lbl_pass.setObjectName("body")
         db_grid.addWidget(lbl_pass, 2, 2)
         self.txt_db_pass = QLineEdit()
@@ -181,12 +181,12 @@ class SettingsDialog(QDialog):
         self.txt_db_pass.setPlaceholderText("••••••••")
         db_grid.addWidget(self.txt_db_pass, 2, 3)
 
-        # URL de Endpoint API (opcional)
-        lbl_api = QLabel("Endpoint API (POST):")
+        # Base URL (Endpoint API)
+        lbl_api = QLabel("Base URL:")
         lbl_api.setObjectName("body")
         db_grid.addWidget(lbl_api, 3, 0)
         self.txt_api_endpoint = QLineEdit()
-        self.txt_api_endpoint.setPlaceholderText("Opcional: http://tuservidor.com/api/productos/imagenes")
+        self.txt_api_endpoint.setPlaceholderText("ej: http://tuservidor.com/api/productos/imagenes")
         db_grid.addWidget(self.txt_api_endpoint, 3, 1, 1, 3)
 
         # Modo de integración
