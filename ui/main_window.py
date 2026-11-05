@@ -19,6 +19,7 @@ from core.batch_worker import ImageBatchWorker
 from core.image_processor import resize_existing_webp_file
 from services.image_indexer import ImageIndexer
 from services.cloud_storage import CloudStorageService
+from services.db_service import post_image_records
 from ui.dialog_settings import SettingsDialog
 from ui.dialog_login import SettingsLoginDialog
 from ui.dialog_preview import ImagePreviewDialog
@@ -482,6 +483,10 @@ class MainWindow(QMainWindow):
         btn_download_local = QPushButton("Guardar en disco")
         btn_download_local.clicked.connect(self._handle_local_download)
         bottom_bar.addWidget(btn_download_local)
+
+        btn_post_db = QPushButton("Guardar en Base de Datos")
+        btn_post_db.clicked.connect(self._handle_post_to_db)
+        bottom_bar.addWidget(btn_post_db)
 
         btn_upload_gcp = QPushButton("Subir a Google Cloud")
         btn_upload_gcp.setObjectName("primaryBtn")
@@ -1104,7 +1109,19 @@ class MainWindow(QMainWindow):
             os.path.join(self.current_output_dir, "image_map.json")
         )
 
-        # 4. Mensaje con informe completo de validación y subida
+        # 4. Registro automático en Base de Datos / Endpoint POST
+        db_report = ""
+        if uploaded_urls:
+            try:
+                db_res = post_image_records(self.current_records)
+                if db_res["ok"]:
+                    db_report = f"\n\n🗄️ Base de Datos:\n{db_res['message']}"
+                else:
+                    db_report = f"\n\n⚠️ Base de Datos:\n{db_res['message']}"
+            except Exception as e:
+                db_report = f"\n\n⚠️ Base de Datos: {e}"
+
+        # 5. Mensaje con informe completo de validación y subida
         msg_parts = [f"✅ Se subieron {len(uploaded_urls)} imágenes a Google Cloud Storage."]
         if rejected_files:
             msg_parts.append("\n⚠️ ARCHIVOS BLOQUEADOS POR REGLA DE CARPETA:")
@@ -1118,4 +1135,25 @@ class MainWindow(QMainWindow):
             msg_parts.append(f"\n❌ {errors} archivos tuvieron error de red al subir.")
 
         msg_parts.append(f"\n\nManifiesto de rutas generado en:\n{out_json}")
-        QMessageBox.information(self, "Control de Contenido GCP", "\n".join(msg_parts))
+        if db_report:
+            msg_parts.append(db_report)
+
+        QMessageBox.information(self, "Control de Contenido GCP y Base de Datos", "\n".join(msg_parts))
+
+    def _handle_post_to_db(self):
+        """Envía manualmente los registros del lote a la base de datos o Endpoint API."""
+        if not self.current_records:
+            QMessageBox.warning(self, "Sin Imágenes", "No hay imágenes en el lote actual para registrar en la base de datos.")
+            return
+
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            res = post_image_records(self.current_records)
+            QApplication.restoreOverrideCursor()
+            if res["ok"]:
+                QMessageBox.information(self, "Registro en Base de Datos", res["message"])
+            else:
+                QMessageBox.critical(self, "Error en Base de Datos", res["message"])
+        except Exception as e:
+            QApplication.restoreOverrideCursor()
+            QMessageBox.critical(self, "Error en Base de Datos", f"No se pudo completar el registro:\n{e}")
