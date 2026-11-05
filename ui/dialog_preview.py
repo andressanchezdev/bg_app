@@ -1,13 +1,13 @@
 import os
 from pathlib import Path
-from PIL import Image
+from PIL import Image, ImageOps
 
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel,
     QPushButton, QFrame, QScrollArea, QWidget
 )
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QPixmap, QPainter, QColor, QBrush, QPen
+from PySide6.QtGui import QPixmap, QImage, QPainter, QColor, QBrush, QPen
 
 from ui.theme import GLOBAL_THEME, COLOR_BORDER_DEFAULT, COLOR_STATUS_OK
 
@@ -143,8 +143,18 @@ class ImagePreviewDialog(QDialog):
             self.lbl_canvas.setText("No se encontró la imagen en disco.")
             return
 
-        src_pixmap = QPixmap(self.image_path)
-        if src_pixmap.isNull():
+        # Cargar a través de PIL para soporte WebP con canal alfa garantizado
+        src_pixmap = None
+        try:
+            with Image.open(self.image_path) as im:
+                rgba = ImageOps.exif_transpose(im).convert("RGBA")
+                w_orig, h_orig = rgba.size
+                qimg = QImage(rgba.tobytes(), w_orig, h_orig, w_orig * 4, QImage.Format_RGBA8888).copy()
+                src_pixmap = QPixmap.fromImage(qimg)
+        except Exception:
+            src_pixmap = QPixmap(self.image_path)
+
+        if not src_pixmap or src_pixmap.isNull():
             self.lbl_canvas.setText("Formato no legible para previsualización.")
             return
 

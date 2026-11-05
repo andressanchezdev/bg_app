@@ -315,7 +315,11 @@ class ImageTouchupDialog(QDialog):
         h = self.spin_h.value()
 
         try:
-            resize_cfg = {"enabled": True, "width": w, "height": h, "mode": self.resize_mode}
+            # Solo re-encuadrar y redimensionar si las medidas cambiaron respecto al lienzo actual.
+            # Esto evita re-encoger el objeto con margen redundante si ya estaba en las medidas deseadas.
+            needs_resize = (final_pil.width != w or final_pil.height != h)
+            resize_cfg = {"enabled": True, "width": w, "height": h, "mode": self.resize_mode} if needs_resize else None
+
             export_to_webp(
                 pil_image=final_pil,
                 output_path=self.processed_path,

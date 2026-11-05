@@ -1,4 +1,4 @@
-from PIL import Image
+from PIL import Image, ImageOps
 from PySide6.QtWidgets import QGraphicsView, QGraphicsScene, QGraphicsPixmapItem
 from PySide6.QtCore import Qt, QPointF
 from PySide6.QtGui import (
@@ -66,20 +66,27 @@ class MaskEditableCanvas(QGraphicsView):
         Si se pasa base_rgb_image (imagen original sin recortar/sin fondo),
         se usa como fuente RGB para que el pincel restaurador recupere
         detalles reales de la foto original.
+        Utiliza siempre QImage.Format_RGBA8888 para evitar distorsiones de alineación de bytes.
         """
         rgba = pil_image.convert("RGBA")
         width, height = rgba.size
 
-        # 1. Imagen base RGB
+        # 1. Imagen base RGB en formato RGBA (4 bytes por pixel = alineación garantizada de scanlines)
         if base_rgb_image:
-            base_rgb = base_rgb_image.convert("RGB")
+            base_rgb = base_rgb_image.convert("RGBA")
             if base_rgb.size != (width, height):
-                base_rgb = base_rgb.resize((width, height), Image.Resampling.LANCZOS)
+                # Preservar aspecto si difiere de tamaño sin deformar
+                fitted = ImageOps.contain(base_rgb, (width, height), Image.Resampling.LANCZOS)
+                canvas_base = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+                ox = (width - fitted.width) // 2
+                oy = (height - fitted.height) // 2
+                canvas_base.paste(fitted, (ox, oy))
+                base_rgb = canvas_base
         else:
-            base_rgb = rgba.convert("RGB")
+            base_rgb = rgba.copy()
 
         rgb_bytes = base_rgb.tobytes()
-        self.original_rgb = QImage(rgb_bytes, width, height, width * 3, QImage.Format_RGB888).copy()
+        self.original_rgb = QImage(rgb_bytes, width, height, width * 4, QImage.Format_RGBA8888).copy()
 
         # 2. Máscara Alfa
         alpha_pil = rgba.split()[3]
@@ -128,7 +135,7 @@ class MaskEditableCanvas(QGraphicsView):
         mask_pil = Image.frombytes("RGBA", (w, h), self.mask_image.bits().tobytes())
         alpha_channel = mask_pil.split()[3]
 
-        rgb_pil = Image.frombytes("RGB", (w, h), self.original_rgb.bits().tobytes())
+        rgb_pil = Image.frombytes("RGBA", (w, h), self.original_rgb.bits().tobytes())
         rgb_pil.putalpha(alpha_channel)
         return rgb_pil
 

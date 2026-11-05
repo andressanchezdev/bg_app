@@ -1,4 +1,5 @@
 import os
+import time
 from io import BytesIO
 import numpy as np
 from PIL import Image, ImageOps
@@ -121,32 +122,35 @@ def resize_existing_webp_file(
     """
     Abre una imagen WebP procesada existente, aplica el redimensionamiento y centrado en lienzo,
     asegurando que si es fondo blanco, este cubra el 100% de las nuevas medidas.
+    Cierra inmediatamente el descriptor de archivo para evitar bloqueos en Windows.
     """
     if not os.path.exists(file_path):
         raise FileNotFoundError(f"Archivo no encontrado: {file_path}")
 
+    # Cargar y copiar en memoria para liberar el descriptor del archivo inmediatamente en Windows
     with Image.open(file_path) as raw_im:
-        im = ImageOps.exif_transpose(raw_im)
-        # Detectar si la imagen ya era sólida (fondo blanco)
-        is_already_solid = (im.mode == "RGB") or (
-            im.mode in ("RGBA", "LA") and im.getchannel("A").getextrema()[0] == 255
-        )
-        effective_white_bg = white_bg or is_already_solid
+        im = ImageOps.exif_transpose(raw_im).copy()
 
-        resized = resize_image(
-            im,
-            target_width=target_width,
-            target_height=target_height,
-            mode=mode,
-            white_bg=effective_white_bg
-        )
-        export_to_webp(
-            pil_image=resized,
-            output_path=file_path,
-            quality=quality,
-            method=6,
-            white_bg=effective_white_bg
-        )
+    # Detectar si la imagen ya era sólida (fondo blanco)
+    is_already_solid = (im.mode == "RGB") or (
+        im.mode in ("RGBA", "LA") and im.getchannel("A").getextrema()[0] == 255
+    )
+    effective_white_bg = white_bg or is_already_solid
+
+    resized = resize_image(
+        im,
+        target_width=target_width,
+        target_height=target_height,
+        mode=mode,
+        white_bg=effective_white_bg
+    )
+    export_to_webp(
+        pil_image=resized,
+        output_path=file_path,
+        quality=quality,
+        method=6,
+        white_bg=effective_white_bg
+    )
 
     new_size_bytes = os.path.getsize(file_path)
     return {
@@ -222,12 +226,26 @@ def export_to_webp(
                 arr[transparent_mask, :3] = 0
                 image_to_save = Image.fromarray(arr, "RGBA")
 
-    image_to_save.save(
-        output_path,
-        "WEBP",
-        quality=quality,
-        lossless=lossless,
-        method=method,
-        exact=False
-    )
+    # Guardar en archivo temporal atómico y reemplazar para evitar bloqueos y archivos truncados en Windows
+    temp_output_path = output_path + f".tmp_{os.getpid()}_{time.time_ns()}.webp"
+    try:
+        image_to_save.save(
+            temp_output_path,
+            "WEBP",
+            quality=quality,
+            lossless=lossless,
+            method=method,
+            exact=False
+        )
+        if os.path.exists(output_path):
+            os.replace(temp_output_path, output_path)
+        else:
+            os.rename(temp_output_path, output_path)
+    except Exception:
+        if os.path.exists(temp_output_path):
+            try:
+                os.remove(temp_output_path)
+            except Exception:
+                pass
+        raise
     return output_path
