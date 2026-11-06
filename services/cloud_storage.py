@@ -1,6 +1,7 @@
 import os
+import re
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from google.cloud import storage
 from google.api_core import exceptions as gcp_exceptions
 from google.auth.exceptions import GoogleAuthError
@@ -171,6 +172,83 @@ class CloudStorageService:
             print(f"[GCS get_existing_folders Warning]: {e}")
             return []
 
+    def resolve_product_folder(
+        self,
+        filename: str,
+        existing_folders: Optional[List[str]] = None
+    ) -> Dict[str, Any]:
+        """
+        Determina la subcarpeta de producto en GCP basándose EXCLUSIVAMENTE en el nombre de la imagen:
+        1. No valida ni depende del nombre del directorio local.
+        2. Busca coincidencia exacta con una carpeta existente en GCP.
+        3. Busca coincidencia de prefijo con carpetas en GCP (ej: '01100610-5-PASTILLAS' -> '01100610-5').
+        4. Busca coincidencia separando por delimitadores ('-', '_', ' ').
+        5. Si la carpeta no existe, infiere el código del nombre y lo usa como prefijo
+           al subir la imagen; GCS representa la carpeta a partir del objeto subido.
+        """
+        if existing_folders is None:
+            existing_folders = self.get_existing_folders()
+
+        stem = Path(filename).stem.strip()
+        folder_dict = {ef.lower(): ef for ef in existing_folders}
+
+        # 1. Coincidencia exacta con carpeta en GCP
+        if stem.lower() in folder_dict:
+            target = folder_dict[stem.lower()]
+            return {
+                "valid": True,
+                "target_subfolder": target,
+                "created_new": False,
+                "reason": f"Coincidencia exacta con carpeta existente '{target}' en GCP."
+            }
+
+        # 2. Coincidencia de prefijo con carpetas en GCP (ordenando de más larga a más corta)
+        for ef_lower, ef_original in sorted(folder_dict.items(), key=lambda x: len(x[0]), reverse=True):
+            if stem.lower().startswith(ef_lower):
+                remainder = stem[len(ef_lower):]
+                if not remainder or remainder[0] in ('-', '_', ' ', '.'):
+                    return {
+                        "valid": True,
+                        "target_subfolder": ef_original,
+                        "created_new": False,
+                        "reason": f"Prefijo de imagen coincide con carpeta existente '{ef_original}' en GCP."
+                    }
+
+        # 3. Delimitadores comunes ('-', '_', ' ')
+        for sep in ('-', '_', ' '):
+            if sep in stem:
+                part = stem.split(sep)[0].strip()
+                if part.lower() in folder_dict:
+                    target = folder_dict[part.lower()]
+                    return {
+                        "valid": True,
+                        "target_subfolder": target,
+                        "created_new": False,
+                        "reason": f"Código extraído '{part}' coincide con carpeta existente '{target}' en GCP."
+                    }
+
+        # Preserve numeric code segments, such as 01100610-5, before a descriptive suffix.
+        code_match = re.match(r"^([A-Za-z0-9]+(?:[-_ ]\d+)*)(?:[-_ ]|$)", stem)
+        if code_match:
+            new_code = code_match.group(1).strip()
+        else:
+            new_code = re.split(r"[-_ ]", stem, maxsplit=1)[0].strip()
+        clean_code = "".join(c for c in new_code if c.isalnum() or c in ('-', '_', '.')).strip() or stem
+
+        # Keep the inferred prefix for subsequent images in this batch.
+        if clean_code not in existing_folders:
+            existing_folders.append(clean_code)
+
+        return {
+            "valid": True,
+            "target_subfolder": clean_code,
+            "created_new": True,
+            "reason": (
+                f"Se usará '{clean_code}' como prefijo GCP; la carpeta aparecerá "
+                "al subir la imagen."
+            )
+        }
+
     def validate_image_target(
         self,
         folder_name: str,
@@ -178,69 +256,10 @@ class CloudStorageService:
         existing_folders: Optional[List[str]] = None
     ) -> Dict[str, Any]:
         """
-        Valida cómo y dónde se almacenará una imagen en GCP:
-        1. Las imágenes NUNCA se almacenan en la ruta raíz directa de base_folder.
-        2. Si la imagen pertenece a una carpeta: el nombre de la carpeta DEBE coincidir
-           con una carpeta existente en GCP. Si coincide, se sube adentro de esa carpeta.
-        3. Si la imagen está suelta (sin carpeta): se lee su nombre (stem) y DEBE coincidir
-           con una carpeta existente en GCP con ese mismo nombre. Si coincide, se almacena
-           dentro de dicha carpeta.
-        4. Si no coincide ninguna carpeta, se rechaza y se genera un error claro.
+        Resuelve la carpeta en GCP basándose en el nombre de la imagen / código,
+        creándola automáticamente si aún no existe.
         """
-        if existing_folders is None:
-            existing_folders = self.get_existing_folders()
-
-        clean_folder = folder_name.strip("/").replace("\\", "/") if folder_name else ""
-        stem_name = Path(filename).stem.strip()
-
-        # Caso 1: La imagen pertenece a una carpeta origen
-        if clean_folder and clean_folder != ".":
-            match = None
-            for ef in existing_folders:
-                if ef.lower() == clean_folder.lower():
-                    match = ef
-                    break
-
-            if match:
-                return {
-                    "valid": True,
-                    "target_subfolder": match,
-                    "is_loose": False,
-                    "reason": f"Carpeta '{clean_folder}' coincide con la carpeta '{match}' en GCP."
-                }
-            else:
-                return {
-                    "valid": False,
-                    "target_subfolder": None,
-                    "is_loose": False,
-                    "reason": (
-                        f"La carpeta '{clean_folder}' NO existe dentro de '{self.base_folder}' en GCP.\n"
-                        f"Carpetas disponibles: {', '.join(existing_folders) if existing_folders else '(Ninguna carpeta creada)'}"
-                    )
-                }
-
-        # Caso 2: Imagen suelta (sin carpeta).
-        # Regla: se lee su nombre de archivo y se almacena dentro de la carpeta con su mismo nombre.
-        match_by_name = None
-        for ef in existing_folders:
-            if ef.lower() == stem_name.lower():
-                match_by_name = ef
-                break
-
-        if match_by_name:
-            return {
-                "valid": True,
-                "target_subfolder": match_by_name,
-                "is_loose": True,
-                "reason": f"Imagen suelta '{filename}': coincide con la carpeta existente '{match_by_name}' en GCP."
-            }
-        else:
-            return {
-                "valid": True,
-                "target_subfolder": "",
-                "is_loose": True,
-                "reason": f"Imagen pura suelta '{filename}': se sube directamente a '{self.base_folder}'."
-            }
+        return self.resolve_product_folder(filename, existing_folders=existing_folders)
 
     def upload_file(
         self,
@@ -259,22 +278,16 @@ class CloudStorageService:
         if not os.path.exists(file_path):
             raise FileNotFoundError(f"El archivo local no existe: {file_path}")
 
-        clean_sub = subfolder.strip("/").replace("\\", "/") if subfolder else ""
-
         if destination_blob_name is None:
             destination_blob_name = os.path.basename(file_path)
 
-        destination_blob_name = destination_blob_name.lstrip("/").replace("\\", "/")
-
-        clean_base = self.base_folder.strip("/") if self.base_folder else ""
-
-        # Si viene en subcarpeta, anteponer la subcarpeta
-        if clean_sub and not destination_blob_name.startswith(clean_sub):
-            destination_blob_name = f"{clean_sub}/{destination_blob_name}"
-
-        # Anteponer la carpeta base si está definida y no está ya presente
-        if clean_base and not destination_blob_name.startswith(clean_base):
-            destination_blob_name = f"{clean_base}/{destination_blob_name}"
+        # Only the image filename is uploaded; local or supplied parent folders are ignored.
+        image_name = destination_blob_name.replace("\\", "/").rsplit("/", 1)[-1]
+        clean_sub = subfolder.strip("/\\").replace("\\", "/") if subfolder else ""
+        clean_base = self.base_folder.strip("/\\").replace("\\", "/") if self.base_folder else ""
+        destination_blob_name = "/".join(
+            part for part in (clean_base, clean_sub, image_name) if part
+        )
 
         try:
             bucket = self.client.bucket(self.bucket_name)

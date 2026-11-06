@@ -693,29 +693,19 @@ class MainWindow(QMainWindow):
 
         for rec in self.current_records:
             fpath = rec["absolute_path"]
-            f_name = rec.get("folder_name", "")
-
-            # Si no hay folder_name pero se cargó un directorio con nombre coincidente
-            if not f_name and self.current_input_root and os.path.isdir(self.current_input_root):
-                root_name = os.path.basename(self.current_input_root)
-                for ef in existing_folders:
-                    if ef.lower() == root_name.lower():
-                        f_name = ef
-                        break
+            fname = rec.get("filename", "")
 
             target_subfolder = ""
             can_upload_item = False
 
             if upload_to_gcs and gcp_service:
-                val = gcp_service.validate_image_target(f_name, rec.get("filename", ""), existing_folders)
-                if val["valid"]:
-                    target_subfolder = val["target_subfolder"]
-                    can_upload_item = True
-                else:
-                    item_desc = f_name if f_name else f"suelta ({rec.get('filename')})"
-                    rejected_folders.add(item_desc)
+                # Determinar carpeta de producto en GCP EXCLUSIVAMENTE por el nombre de la imagen / código
+                val = gcp_service.resolve_product_folder(fname, existing_folders)
+                target_subfolder = val["target_subfolder"]
+                can_upload_item = True
 
             rec["target_subfolder"] = target_subfolder
+            rec["folder_name"] = target_subfolder
             target_out_dir = self.current_output_dir
 
             worker = ImageBatchWorker(
@@ -1068,24 +1058,10 @@ class MainWindow(QMainWindow):
                     rec_found = orig
                     break
 
-            folder_candidate = ""
-            if rec_found and rec_found.get("folder_name"):
-                folder_candidate = rec_found["folder_name"]
-            elif self.current_input_root and os.path.isdir(self.current_input_root):
-                root_name = os.path.basename(self.current_input_root)
-                for ef in existing_folders:
-                    if ef.lower() == root_name.lower():
-                        folder_candidate = ef
-                        break
-
-            # 2. Validar contra el Bucket (subcarpeta coincidente o imagen suelta con nombre coincidente)
             fname_curr = os.path.basename(fpath)
-            val = gcp_service.validate_image_target(folder_candidate, fname_curr, existing_folders)
-            if not val["valid"]:
-                rej_key = folder_candidate if folder_candidate else f"Imagen suelta '{fname_curr}'"
-                rejected_files.setdefault(rej_key, []).append((fname_curr, val["reason"]))
-                continue
 
+            # Determinar subcarpeta en GCP EXCLUSIVAMENTE por el nombre de la imagen / código
+            val = gcp_service.resolve_product_folder(fname_curr, existing_folders)
             target_sub = val["target_subfolder"]
             blob_name = fname_curr
 
@@ -1099,6 +1075,7 @@ class MainWindow(QMainWindow):
                 uploaded_urls.append(url)
                 if rec_found:
                     rec_found["cloud_url"] = url
+                    rec_found["folder_name"] = target_sub
                     rec_found["processed"] = True
             else:
                 errors += 1
@@ -1123,14 +1100,6 @@ class MainWindow(QMainWindow):
 
         # 5. Mensaje con informe completo de validación y subida
         msg_parts = [f"✅ Se subieron {len(uploaded_urls)} imágenes a Google Cloud Storage."]
-        if rejected_files:
-            msg_parts.append("\n⚠️ ARCHIVOS BLOQUEADOS POR REGLA DE CARPETA:")
-            for c_name, flist in rejected_files.items():
-                msg_parts.append(f" • {c_name}: {len(flist)} archivo(s) no coinciden con ninguna carpeta de GCP.")
-            msg_parts.append(
-                f"\nRegla: Las imágenes en carpetas deben coincidir con una carpeta del bucket. Las imágenes sueltas deben llamarse igual que una carpeta existente en '{base_folder}'.\n"
-                f"Total carpetas registradas en GCP: {len(existing_folders)} (ej: {', '.join(existing_folders[:6])}...)"
-            )
         if errors > 0:
             msg_parts.append(f"\n❌ {errors} archivos tuvieron error de red al subir.")
 

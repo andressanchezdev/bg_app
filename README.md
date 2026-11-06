@@ -36,7 +36,8 @@ Aplicación de escritorio desarrollada en Python con **PySide6** para la elimina
 
 6. **Integración con Google Cloud Storage (GCS)**:
    - Carga automática opcional de imágenes procesadas al bucket de GCS configurado.
-   - Respeto de la estructura de carpetas origen (`carpeta_padre/imagen.webp`).
+   - El destino se resuelve por el código del nombre de la imagen, sin depender de sus carpetas locales.
+   - Se sube solo el archivo WebP a `dependencias/img/productos/<codigo>/<imagen>.webp`; si el prefijo aún no existe, GCS lo representa al subir el objeto, sin crear un objeto vacío de carpeta.
    - Generación y copia al portapapeles de URLs públicas/estándar de GCS.
    - Diagnóstico visual de presencia de credenciales en tiempo real (`credentials/gcp_key.json`).
 
