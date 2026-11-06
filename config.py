@@ -74,21 +74,20 @@ def load_env_defaults():
                     if line and not line.startswith("#") and "=" in line:
                         k, v = line.split("=", 1)
                         k, v = k.strip(), v.strip().strip('"').strip("'")
-                        if k not in os.environ:
-                            os.environ[k] = v
+                        os.environ[k] = v
         except Exception:
             pass
 
 load_env_defaults()
 
 DB_HOST = os.getenv("DB_HOST", "localhost")
-DB_PORT = int(os.getenv("DB_PORT", "5432"))
-DB_DATABASE = os.getenv("DB_DATABASE", "Images")
-DB_USER = os.getenv("DB_USER", "postgres")
+DB_PORT = int(os.getenv("DB_PORT", "3306"))
+DB_DATABASE = os.getenv("DB_DATABASE", os.getenv("DB_NAME", "mysql"))
+DB_USER = os.getenv("DB_USER", "root")
 DB_PASSWORD = os.getenv("DB_PASSWORD", "password_123")
-DB_TABLE = "images"
+DB_TABLE = os.getenv("DB_TABLE", "productos")
 DB_API_ENDPOINT = ""
-DB_SYNC_MODE = "postgres"
+DB_SYNC_MODE = "db"
 
 # ==============================================================================
 # GESTOR DE AJUSTES EN ARCHIVO JSON

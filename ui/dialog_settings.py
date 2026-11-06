@@ -194,9 +194,9 @@ class SettingsDialog(QDialog):
         lbl_mode.setObjectName("body")
         db_grid.addWidget(lbl_mode, 4, 0)
         self.combo_sync_mode = QComboBox()
-        self.combo_sync_mode.addItem("Solo PostgreSQL Directo", "postgres")
+        self.combo_sync_mode.addItem("Solo Base de Datos Directa (MySQL/PostgreSQL)", "db")
         self.combo_sync_mode.addItem("Solo Endpoint REST API (HTTP POST)", "api")
-        self.combo_sync_mode.addItem("Ambos (PostgreSQL + Endpoint API)", "both")
+        self.combo_sync_mode.addItem("Ambos (Base de Datos + Endpoint API)", "both")
         db_grid.addWidget(self.combo_sync_mode, 4, 1, 1, 3)
 
         layout_db.addLayout(db_grid)
@@ -269,14 +269,14 @@ class SettingsDialog(QDialog):
 
         # DB / Endpoint
         self.txt_db_host.setText(getattr(config, "DB_HOST", "localhost"))
-        self.spin_db_port.setValue(int(getattr(config, "DB_PORT", 5432)))
-        self.txt_db_name.setText(getattr(config, "DB_DATABASE", "Images"))
-        self.txt_db_table.setText(getattr(config, "DB_TABLE", "images"))
-        self.txt_db_user.setText(getattr(config, "DB_USER", "postgres"))
+        self.spin_db_port.setValue(int(getattr(config, "DB_PORT", 3306)))
+        self.txt_db_name.setText(getattr(config, "DB_DATABASE", "mysql"))
+        self.txt_db_table.setText(getattr(config, "DB_TABLE", "productos"))
+        self.txt_db_user.setText(getattr(config, "DB_USER", "root"))
         self.txt_db_pass.setText(getattr(config, "DB_PASSWORD", "password_123"))
         self.txt_api_endpoint.setText(getattr(config, "DB_API_ENDPOINT", ""))
 
-        sync_mode = getattr(config, "DB_SYNC_MODE", "postgres")
+        sync_mode = getattr(config, "DB_SYNC_MODE", "db")
         idx_mode = self.combo_sync_mode.findData(sync_mode)
         if idx_mode != -1:
             self.combo_sync_mode.setCurrentIndex(idx_mode)
@@ -379,12 +379,12 @@ class SettingsDialog(QDialog):
         return {
             "host": self.txt_db_host.text().strip() or "localhost",
             "port": self.spin_db_port.value(),
-            "database": self.txt_db_name.text().strip() or "Images",
-            "user": self.txt_db_user.text().strip() or "postgres",
+            "database": self.txt_db_name.text().strip() or "mysql",
+            "user": self.txt_db_user.text().strip() or "root",
             "password": self.txt_db_pass.text(),
-            "table": self.txt_db_table.text().strip() or "images",
+            "table": self.txt_db_table.text().strip() or "productos",
             "api_endpoint": self.txt_api_endpoint.text().strip(),
-            "sync_mode": self.combo_sync_mode.currentData() or "postgres"
+            "sync_mode": self.combo_sync_mode.currentData() or "db"
         }
 
     def _test_db_connection(self):
