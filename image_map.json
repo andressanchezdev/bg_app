@@ -1,0 +1,128 @@
+[
+  {
+    "codigo": "566w",
+    "subcarpeta_gcp": "566w",
+    "nombre_archivo": "566w-Tk-sArY6qUI-5.webp",
+    "formato": "WEBP",
+    "ruta_relativa_gcp": "dependencias/img/productos/566w/566w-Tk-sArY6qUI-5.webp",
+    "url_publica_gcp": "https://storage.googleapis.com/importadorapremiumonline/dependencias/img/productos/566w/566w-Tk-sArY6qUI-5.webp",
+    "estado": "SUBIDA_GCP"
+  },
+  {
+    "codigo": "68",
+    "subcarpeta_gcp": "68",
+    "nombre_archivo": "68_C_SUAVE-2025-LIFESTYLE-ALLMENPRODUCTS-mobile_4a68f482-cb11-4f32-bcb3-755202fa041e-5.webp",
+    "formato": "WEBP",
+    "ruta_relativa_gcp": "dependencias/img/productos/68/68_C_SUAVE-2025-LIFESTYLE-ALLMENPRODUCTS-mobile_4a68f482-cb11-4f32-bcb3-755202fa041e-5.webp",
+    "url_publica_gcp": "https://storage.googleapis.com/importadorapremiumonline/dependencias/img/productos/68/68_C_SUAVE-2025-LIFESTYLE-ALLMENPRODUCTS-mobile_4a68f482-cb11-4f32-bcb3-755202fa041e-5.webp",
+    "estado": "SUBIDA_GCP"
+  },
+  {
+    "codigo": "images",
+    "subcarpeta_gcp": "images",
+    "nombre_archivo": "images%20%281%29-4.webp",
+    "formato": "WEBP",
+    "ruta_relativa_gcp": "dependencias/img/productos/images/images%20%281%29-4.webp",
+    "url_publica_gcp": "https://storage.googleapis.com/importadorapremiumonline/dependencias/img/productos/images/images%20%281%29-4.webp",
+    "estado": "SUBIDA_GCP"
+  },
+  {
+    "codigo": "images",
+    "subcarpeta_gcp": "images",
+    "nombre_archivo": "images-4.webp",
+    "formato": "WEBP",
+    "ruta_relativa_gcp": "dependencias/img/productos/images/images-4.webp",
+    "url_publica_gcp": "https://storage.googleapis.com/importadorapremiumonline/dependencias/img/productos/images/images-4.webp",
+    "estado": "SUBIDA_GCP"
+  },
+  {
+    "codigo": "pruebaimg",
+    "subcarpeta_gcp": "pruebaimg",
+    "nombre_archivo": "pruebaimg-9.webp",
+    "formato": "WEBP",
+    "ruta_relativa_gcp": "dependencias/img/productos/pruebaimg/pruebaimg-9.webp",
+    "url_publica_gcp": "https://storage.googleapis.com/importadorapremiumonline/dependencias/img/productos/pruebaimg/pruebaimg-9.webp",
+    "estado": "SUBIDA_GCP"
+  },
+  {
+    "codigo": "rn",
+    "subcarpeta_gcp": "rn",
+    "nombre_archivo": "rn-image_picker_lib_temp_536f1d3e-d8c1-4cfc-b6a0-74103e02bf21-5.webp",
+    "formato": "WEBP",
+    "ruta_relativa_gcp": "dependencias/img/productos/rn/rn-image_picker_lib_temp_536f1d3e-d8c1-4cfc-b6a0-74103e02bf21-5.webp",
+    "url_publica_gcp": "https://storage.googleapis.com/importadorapremiumonline/dependencias/img/productos/rn/rn-image_picker_lib_temp_536f1d3e-d8c1-4cfc-b6a0-74103e02bf21-5.webp",
+    "estado": "SUBIDA_GCP"
+  },
+  {
+    "codigo": "566w",
+    "subcarpeta_gcp": "566w",
+    "nombre_archivo": "566w-Tk-sArY6qUI.webp",
+    "formato": "WEBP",
+    "ruta_relativa_gcp": "dependencias/img/productos/566w/566w-Tk-sArY6qUI.webp",
+    "url_publica_gcp": "",
+    "estado": "PROCESADA"
+  },
+  {
+    "codigo": "68",
+    "subcarpeta_gcp": "68",
+    "nombre_archivo": "68_C_SUAVE-2025-LIFESTYLE-ALLMENPRODUCTS-mobile_4a68f482-cb11-4f32-bcb3-755202fa041e.webp",
+    "formato": "WEBP",
+    "ruta_relativa_gcp": "dependencias/img/productos/68/68_C_SUAVE-2025-LIFESTYLE-ALLMENPRODUCTS-mobile_4a68f482-cb11-4f32-bcb3-755202fa041e.webp",
+    "url_publica_gcp": "",
+    "estado": "PROCESADA"
+  },
+  {
+    "codigo": "images",
+    "subcarpeta_gcp": "images",
+    "nombre_archivo": "images (1).webp",
+    "formato": "WEBP",
+    "ruta_relativa_gcp": "dependencias/img/productos/images/images (1).webp",
+    "url_publica_gcp": "",
+    "estado": "PROCESADA"
+  },
+  {
+    "codigo": "images",
+    "subcarpeta_gcp": "images",
+    "nombre_archivo": "images.webp",
+    "formato": "WEBP",
+    "ruta_relativa_gcp": "dependencias/img/productos/images/images.webp",
+    "url_publica_gcp": "",
+    "estado": "PROCESADA"
+  },
+  {
+    "codigo": "pruebaimg",
+    "subcarpeta_gcp": "pruebaimg",
+    "nombre_archivo": "pruebaimg.webp",
+    "formato": "WEBP",
+    "ruta_relativa_gcp": "dependencias/img/productos/pruebaimg/pruebaimg.webp",
+    "url_publica_gcp": "",
+    "estado": "PROCESADA"
+  },
+  {
+    "codigo": "rn",
+    "subcarpeta_gcp": "rn",
+    "nombre_archivo": "rn-image_picker_lib_temp_536f1d3e-d8c1-4cfc-b6a0-74103e02bf21.webp",
+    "formato": "WEBP",
+    "ruta_relativa_gcp": "dependencias/img/productos/rn/rn-image_picker_lib_temp_536f1d3e-d8c1-4cfc-b6a0-74103e02bf21.webp",
+    "url_publica_gcp": "",
+    "estado": "PROCESADA"
+  },
+  {
+    "codigo": "pruebaimg",
+    "subcarpeta_gcp": "pruebaimg",
+    "nombre_archivo": "pruebaimg.webp",
+    "formato": "WEBP",
+    "ruta_relativa_gcp": "dependencias/img/productos/pruebaimg/pruebaimg.webp",
+    "url_publica_gcp": "",
+    "estado": "PROCESADA"
+  },
+  {
+    "codigo": "pruebaimg",
+    "subcarpeta_gcp": "pruebaimg",
+    "nombre_archivo": "pruebaimg.webp",
+    "formato": "WEBP",
+    "ruta_relativa_gcp": "dependencias/img/productos/pruebaimg/pruebaimg.webp",
+    "url_publica_gcp": "",
+    "estado": "PROCESADA"
+  }
+]

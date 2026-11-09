@@ -189,15 +189,31 @@ class SettingsDialog(QDialog):
         self.txt_api_endpoint.setPlaceholderText("ej: http://tuservidor.com/api/productos/imagenes")
         db_grid.addWidget(self.txt_api_endpoint, 3, 1, 1, 3)
 
+        # Columna Código (Búsqueda)
+        lbl_col_code = QLabel("Col. Código:")
+        lbl_col_code.setObjectName("body")
+        db_grid.addWidget(lbl_col_code, 4, 0)
+        self.txt_db_code_col = QLineEdit()
+        self.txt_db_code_col.setPlaceholderText("codigo")
+        db_grid.addWidget(self.txt_db_code_col, 4, 1)
+
+        # Columna Imágenes (Array / Ruta)
+        lbl_col_img = QLabel("Col. Imágenes:")
+        lbl_col_img.setObjectName("body")
+        db_grid.addWidget(lbl_col_img, 4, 2)
+        self.txt_db_img_col = QLineEdit()
+        self.txt_db_img_col.setPlaceholderText("imagenArray")
+        db_grid.addWidget(self.txt_db_img_col, 4, 3)
+
         # Modo de integración
         lbl_mode = QLabel("Modo de Envío:")
         lbl_mode.setObjectName("body")
-        db_grid.addWidget(lbl_mode, 4, 0)
+        db_grid.addWidget(lbl_mode, 5, 0)
         self.combo_sync_mode = QComboBox()
         self.combo_sync_mode.addItem("Solo Base de Datos Directa (MySQL/PostgreSQL)", "db")
         self.combo_sync_mode.addItem("Solo Endpoint REST API (HTTP POST)", "api")
         self.combo_sync_mode.addItem("Ambos (Base de Datos + Endpoint API)", "both")
-        db_grid.addWidget(self.combo_sync_mode, 4, 1, 1, 3)
+        db_grid.addWidget(self.combo_sync_mode, 5, 1, 1, 3)
 
         layout_db.addLayout(db_grid)
 
@@ -272,6 +288,8 @@ class SettingsDialog(QDialog):
         self.spin_db_port.setValue(int(getattr(config, "DB_PORT", 3306)))
         self.txt_db_name.setText(getattr(config, "DB_DATABASE", "mysql"))
         self.txt_db_table.setText(getattr(config, "DB_TABLE", "productos"))
+        self.txt_db_code_col.setText(getattr(config, "DB_CODE_COLUMN", "codigo"))
+        self.txt_db_img_col.setText(getattr(config, "DB_IMAGE_COLUMN", "imagenArray"))
         self.txt_db_user.setText(getattr(config, "DB_USER", "root"))
         self.txt_db_pass.setText(getattr(config, "DB_PASSWORD", "password_123"))
         self.txt_api_endpoint.setText(getattr(config, "DB_API_ENDPOINT", ""))
@@ -383,6 +401,8 @@ class SettingsDialog(QDialog):
             "user": self.txt_db_user.text().strip() or "root",
             "password": self.txt_db_pass.text(),
             "table": self.txt_db_table.text().strip() or "productos",
+            "code_column": self.txt_db_code_col.text().strip() or "codigo",
+            "image_column": self.txt_db_img_col.text().strip() or "imagenArray",
             "api_endpoint": self.txt_api_endpoint.text().strip(),
             "sync_mode": self.combo_sync_mode.currentData() or "db"
         }
@@ -450,6 +470,8 @@ class SettingsDialog(QDialog):
             db_user=cfg["user"],
             db_password=cfg["password"],
             db_table=cfg["table"],
+            db_code_column=cfg["code_column"],
+            db_image_column=cfg["image_column"],
             db_api_endpoint=cfg["api_endpoint"],
             db_sync_mode=cfg["sync_mode"]
         )

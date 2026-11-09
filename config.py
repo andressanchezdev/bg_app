@@ -86,6 +86,8 @@ DB_DATABASE = os.getenv("DB_DATABASE", os.getenv("DB_NAME", "mysql"))
 DB_USER = os.getenv("DB_USER", "root")
 DB_PASSWORD = os.getenv("DB_PASSWORD", "password_123")
 DB_TABLE = os.getenv("DB_TABLE", "productos")
+DB_CODE_COLUMN = os.getenv("DB_CODE_COLUMN", "codigo")
+DB_IMAGE_COLUMN = os.getenv("DB_IMAGE_COLUMN", "imagenArray")
 DB_API_ENDPOINT = ""
 DB_SYNC_MODE = "db"
 
@@ -96,7 +98,7 @@ SETTINGS_FILE = BASE_DIR / "output" / "settings.json"
 
 def load_settings():
     global THEME, GCS_BUCKET_NAME, GCS_BASE_FOLDER, CLOUD_UPLOAD_ENABLED
-    global DB_HOST, DB_PORT, DB_DATABASE, DB_USER, DB_PASSWORD, DB_TABLE, DB_API_ENDPOINT, DB_SYNC_MODE
+    global DB_HOST, DB_PORT, DB_DATABASE, DB_USER, DB_PASSWORD, DB_TABLE, DB_CODE_COLUMN, DB_IMAGE_COLUMN, DB_API_ENDPOINT, DB_SYNC_MODE
     if SETTINGS_FILE.exists():
         try:
             with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
@@ -111,6 +113,8 @@ def load_settings():
                 DB_USER = data.get("db_user", DB_USER)
                 DB_PASSWORD = data.get("db_password", DB_PASSWORD)
                 DB_TABLE = data.get("db_table", DB_TABLE)
+                DB_CODE_COLUMN = data.get("db_code_column", DB_CODE_COLUMN)
+                DB_IMAGE_COLUMN = data.get("db_image_column", DB_IMAGE_COLUMN)
                 DB_API_ENDPOINT = data.get("db_api_endpoint", DB_API_ENDPOINT)
                 DB_SYNC_MODE = data.get("db_sync_mode", DB_SYNC_MODE)
         except Exception as e:
@@ -127,11 +131,13 @@ def save_settings(
     db_user=None,
     db_password=None,
     db_table=None,
+    db_code_column=None,
+    db_image_column=None,
     db_api_endpoint=None,
     db_sync_mode=None
 ):
     global THEME, GCS_BUCKET_NAME, GCS_BASE_FOLDER, CLOUD_UPLOAD_ENABLED
-    global DB_HOST, DB_PORT, DB_DATABASE, DB_USER, DB_PASSWORD, DB_TABLE, DB_API_ENDPOINT, DB_SYNC_MODE
+    global DB_HOST, DB_PORT, DB_DATABASE, DB_USER, DB_PASSWORD, DB_TABLE, DB_CODE_COLUMN, DB_IMAGE_COLUMN, DB_API_ENDPOINT, DB_SYNC_MODE
     if theme is not None:
         THEME = theme
     if bucket_name is not None:
@@ -152,6 +158,10 @@ def save_settings(
         DB_PASSWORD = db_password
     if db_table is not None:
         DB_TABLE = db_table
+    if db_code_column is not None:
+        DB_CODE_COLUMN = db_code_column
+    if db_image_column is not None:
+        DB_IMAGE_COLUMN = db_image_column
     if db_api_endpoint is not None:
         DB_API_ENDPOINT = db_api_endpoint
     if db_sync_mode is not None:
@@ -170,6 +180,8 @@ def save_settings(
             "db_user": DB_USER,
             "db_password": DB_PASSWORD,
             "db_table": DB_TABLE,
+            "db_code_column": DB_CODE_COLUMN,
+            "db_image_column": DB_IMAGE_COLUMN,
             "db_api_endpoint": DB_API_ENDPOINT,
             "db_sync_mode": DB_SYNC_MODE
         }

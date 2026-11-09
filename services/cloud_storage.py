@@ -73,6 +73,7 @@ class CloudStorageService:
         self.base_folder = base_folder.strip("/") if base_folder else ""
         self._client = None
         self._cached_folders = None
+        self._cached_subfolder_files = {}  # {subfolder: set(filenames)}
 
     @property
     def client(self) -> storage.Client:
@@ -172,19 +173,104 @@ class CloudStorageService:
             print(f"[GCS get_existing_folders Warning]: {e}")
             return []
 
+    def get_files_in_subfolder(self, subfolder: str, force_refresh: bool = False) -> Set[str]:
+        """
+        Consulta y retorna el conjunto de nombres de archivos existentes dentro
+        de una subcarpeta de GCP (ej: 'dependencias/img/productos/{subfolder}/').
+        Usa caché en memoria para evitar llamadas de red redundantes.
+        """
+        clean_sub = subfolder.strip("/\\").replace("\\", "/")
+        if not force_refresh and clean_sub in self._cached_subfolder_files:
+            return self._cached_subfolder_files[clean_sub]
+
+        if not self.bucket_name:
+            return set()
+
+        try:
+            bucket = self.client.bucket(self.bucket_name)
+            clean_base = self.base_folder.strip("/\\").replace("\\", "/")
+            prefix = f"{clean_base}/{clean_sub}/" if clean_base else f"{clean_sub}/"
+            prefix = prefix.lstrip("/")
+
+            blobs = bucket.list_blobs(prefix=prefix, delimiter="/")
+            file_names = set()
+            for b in blobs:
+                # Extraer sólo el nombre del archivo dentro de esa subcarpeta
+                fname = b.name[len(prefix):].strip("/")
+                if fname and not fname.endswith("/"):
+                    file_names.add(fname)
+
+            self._cached_subfolder_files[clean_sub] = file_names
+            return file_names
+        except Exception as e:
+            print(f"[GCS get_files_in_subfolder Warning for {subfolder}]: {e}")
+            if clean_sub not in self._cached_subfolder_files:
+                self._cached_subfolder_files[clean_sub] = set()
+            return self._cached_subfolder_files[clean_sub]
+
+    def resolve_non_colliding_name(self, subfolder: str, target_filename: str) -> str:
+        """
+        Si el nombre de archivo ya existe dentro de la subcarpeta en GCP,
+        le asigna un consecutivo automático (ej: '01100610-5.webp' -> '01100610-5-2.webp')
+        para NUNCA sobreescribir imágenes existentes.
+        """
+        clean_sub = subfolder.strip("/\\").replace("\\", "/")
+        existing_files = self.get_files_in_subfolder(clean_sub)
+
+        # Normalizar extension a webp si aplica
+        stem = Path(target_filename).stem
+        ext = Path(target_filename).suffix.lower()
+        if not ext:
+            ext = ".webp"
+
+        candidate = f"{stem}{ext}"
+        existing_lower = {f.lower() for f in existing_files}
+
+        if candidate.lower() not in existing_lower:
+            existing_files.add(candidate)
+            return candidate
+
+        # Extraer base sin sufijo numérico previo si existiera
+        # Ej: '01100610-5-2' -> base_stem='01100610-5', o '01100610-5' -> base_stem='01100610-5'
+        # Buscar el mayor consecutivo existente
+        pattern = re.compile(rf"^{re.escape(stem)}[-_](\d+)\{ext}$", re.IGNORECASE)
+        max_idx = 1
+
+        for ef in existing_files:
+            m = pattern.match(ef)
+            if m:
+                try:
+                    idx = int(m.group(1))
+                    if idx >= max_idx:
+                        max_idx = idx + 1
+                except ValueError:
+                    pass
+            elif ef.lower() == candidate.lower():
+                if max_idx <= 1:
+                    max_idx = 2
+
+        new_name = f"{stem}-{max_idx}{ext}"
+        while new_name.lower() in existing_lower:
+            max_idx += 1
+            new_name = f"{stem}-{max_idx}{ext}"
+
+        existing_files.add(new_name)
+        return new_name
+
     def resolve_product_folder(
         self,
         filename: str,
-        existing_folders: Optional[List[str]] = None
+        existing_folders: Optional[List[str]] = None,
+        folder_candidate: Optional[str] = None
     ) -> Dict[str, Any]:
         """
-        Determina la subcarpeta de producto en GCP basándose EXCLUSIVAMENTE en el nombre de la imagen:
-        1. No valida ni depende del nombre del directorio local.
-        2. Busca coincidencia exacta con una carpeta existente en GCP.
-        3. Busca coincidencia de prefijo con carpetas en GCP (ej: '01100610-5-PASTILLAS' -> '01100610-5').
-        4. Busca coincidencia separando por delimitadores ('-', '_', ' ').
-        5. Si la carpeta no existe, infiere el código del nombre y lo usa como prefijo
-           al subir la imagen; GCS representa la carpeta a partir del objeto subido.
+        Determina de forma inteligente la subcarpeta de producto en GCP:
+        1. Evalúa si la carpeta contenedora inmediata (ej: 'productos/01100610-5' -> '01100610-5')
+           coincide con una carpeta existente en GCP. Si es así, agrupa el contenido dentro de ella.
+        2. Evalúa si el nombre de la imagen coincide de forma exacta, por prefijo o delimitador con GCP.
+        3. Si la carpeta contenedora no es genérica (ej: no es 'productos', 'fotos', 'descargas'),
+           la toma como el código del producto para crearla en GCP si aún no existe.
+        4. Si es una imagen suelta, extrae el código del propio nombre de archivo.
         """
         if existing_folders is None:
             existing_folders = self.get_existing_folders()
@@ -192,17 +278,74 @@ class CloudStorageService:
         stem = Path(filename).stem.strip()
         folder_dict = {ef.lower(): ef for ef in existing_folders}
 
-        # 1. Coincidencia exacta con carpeta en GCP
+        # Conjunto de nombres de carpetas genéricas locales que NO deben ser tomadas como códigos de producto
+        GENERIC_CONTAINERS = {
+            "productos", "producto", "imagenes", "fotos", "descargas", "downloads",
+            "desktop", "escritorio", "nuevo", "lote", "lotes", "batch", "processed",
+            "output", "temp", "tmp", "galeria", "variantes", "angulos", "tomas", "subcarpetas", "hd", "web"
+        }
+
+        # -----------------------------------------------------------------
+        # 1. VALIDACIÓN POR JERARQUÍA COMPLETA DE CARPETAS (SOPORTE MULTINIVEL)
+        # -----------------------------------------------------------------
+        # Si la imagen viene dentro de 'productos/01100610-5/galeria/angulos/' o '01100610-5/sub1/'
+        # analiza todos los segmentos del árbol para encontrar el código del producto
+        if folder_candidate:
+            clean_cand = folder_candidate.strip("/\\").replace("\\", "/")
+            segments = [s.strip() for s in clean_cand.split("/") if s.strip()]
+
+            # 1.A. ¿Alguno de los directorios de la ruta coincide con una carpeta existente en GCP?
+            for seg in segments:
+                if seg.lower() in folder_dict:
+                    target = folder_dict[seg.lower()]
+                    return {
+                        "valid": True,
+                        "target_subfolder": target,
+                        "created_new": False,
+                        "reason": f"El directorio '{seg}' en la ruta coincide con la carpeta existente '{target}' en GCP."
+                    }
+
+                # Buscar por delimitadores en cada segmento del directorio
+                for sep in ('-', '_', ' '):
+                    if sep in seg:
+                        part = seg.split(sep)[0].strip()
+                        if part.lower() in folder_dict:
+                            target = folder_dict[part.lower()]
+                            return {
+                                "valid": True,
+                                "target_subfolder": target,
+                                "created_new": False,
+                                "reason": f"Código extraído del directorio '{part}' coincide con carpeta en GCP."
+                            }
+
+            # 1.B. Si no coincide con GCP, buscar el primer segmento del árbol que represente un código de producto nuevo
+            for seg in segments:
+                if seg.lower() not in GENERIC_CONTAINERS and len(seg) > 1:
+                    clean_code = "".join(c for c in seg if c.isalnum() or c in ('-', '_', '.')).strip()
+                    if clean_code:
+                        if clean_code not in existing_folders:
+                            existing_folders.append(clean_code)
+                        return {
+                            "valid": True,
+                            "target_subfolder": clean_code,
+                            "created_new": True,
+                            "reason": f"Subdirectorio '{clean_code}' detectado como código de producto para agrupar las imágenes en GCP."
+                        }
+
+        # -----------------------------------------------------------------
+        # 2. VALIDACIÓN POR NOMBRE DE ARCHIVO
+        # -----------------------------------------------------------------
+        # 2.A. Coincidencia exacta con el nombre del archivo
         if stem.lower() in folder_dict:
             target = folder_dict[stem.lower()]
             return {
                 "valid": True,
                 "target_subfolder": target,
                 "created_new": False,
-                "reason": f"Coincidencia exacta con carpeta existente '{target}' en GCP."
+                "reason": f"Coincidencia exacta de archivo con carpeta existente '{target}' en GCP."
             }
 
-        # 2. Coincidencia de prefijo con carpetas en GCP (ordenando de más larga a más corta)
+        # 2.B. Coincidencia de prefijo con carpetas en GCP
         for ef_lower, ef_original in sorted(folder_dict.items(), key=lambda x: len(x[0]), reverse=True):
             if stem.lower().startswith(ef_lower):
                 remainder = stem[len(ef_lower):]
@@ -214,7 +357,7 @@ class CloudStorageService:
                         "reason": f"Prefijo de imagen coincide con carpeta existente '{ef_original}' en GCP."
                     }
 
-        # 3. Delimitadores comunes ('-', '_', ' ')
+        # 2.C. Delimitadores comunes en el archivo ('-', '_', ' ')
         for sep in ('-', '_', ' '):
             if sep in stem:
                 part = stem.split(sep)[0].strip()
@@ -224,10 +367,29 @@ class CloudStorageService:
                         "valid": True,
                         "target_subfolder": target,
                         "created_new": False,
-                        "reason": f"Código extraído '{part}' coincide con carpeta existente '{target}' en GCP."
+                        "reason": f"Código extraído del archivo '{part}' coincide con carpeta existente '{target}' en GCP."
                     }
 
-        # Preserve numeric code segments, such as 01100610-5, before a descriptive suffix.
+        # -----------------------------------------------------------------
+        # 3. CREACIÓN DE NUEVA CARPETA EN GCP (Si no existía previamente)
+        # -----------------------------------------------------------------
+        # Prioridad 3.A: Si la carpeta contenedora no es genérica, ella es el código del producto
+        if folder_candidate:
+            clean_cand = folder_candidate.strip("/\\").replace("\\", "/")
+            leaf_folder = clean_cand.split("/")[-1].strip()
+            if leaf_folder.lower() not in GENERIC_CONTAINERS and len(leaf_folder) > 1:
+                clean_code = "".join(c for c in leaf_folder if c.isalnum() or c in ('-', '_', '.')).strip()
+                if clean_code:
+                    if clean_code not in existing_folders:
+                        existing_folders.append(clean_code)
+                    return {
+                        "valid": True,
+                        "target_subfolder": clean_code,
+                        "created_new": True,
+                        "reason": f"Carpeta contenedora '{clean_code}' será creada en GCP para agrupar estas imágenes."
+                    }
+
+        # Prioridad 3.B: Si es un archivo suelto, extrae el código de su nombre
         code_match = re.match(r"^([A-Za-z0-9]+(?:[-_ ]\d+)*)(?:[-_ ]|$)", stem)
         if code_match:
             new_code = code_match.group(1).strip()
@@ -235,7 +397,6 @@ class CloudStorageService:
             new_code = re.split(r"[-_ ]", stem, maxsplit=1)[0].strip()
         clean_code = "".join(c for c in new_code if c.isalnum() or c in ('-', '_', '.')).strip() or stem
 
-        # Keep the inferred prefix for subsequent images in this batch.
         if clean_code not in existing_folders:
             existing_folders.append(clean_code)
 
@@ -243,10 +404,7 @@ class CloudStorageService:
             "valid": True,
             "target_subfolder": clean_code,
             "created_new": True,
-            "reason": (
-                f"Se usará '{clean_code}' como prefijo GCP; la carpeta aparecerá "
-                "al subir la imagen."
-            )
+            "reason": f"Se creará la carpeta '{clean_code}' en GCP a partir del código de la imagen."
         }
 
     def validate_image_target(
@@ -256,21 +414,26 @@ class CloudStorageService:
         existing_folders: Optional[List[str]] = None
     ) -> Dict[str, Any]:
         """
-        Resuelve la carpeta en GCP basándose en el nombre de la imagen / código,
-        creándola automáticamente si aún no existe.
+        Resuelve la carpeta en GCP evaluando tanto la carpeta contenedora como el nombre de archivo.
         """
-        return self.resolve_product_folder(filename, existing_folders=existing_folders)
+        return self.resolve_product_folder(
+            filename=filename,
+            existing_folders=existing_folders,
+            folder_candidate=folder_name
+        )
 
     def upload_file(
         self,
         file_path: str,
         destination_blob_name: Optional[str] = None,
         subfolder: Optional[str] = None,
-        make_public: bool = True
+        make_public: bool = True,
+        avoid_overwrite: bool = True
     ) -> Optional[str]:
         """
         Sube un archivo local a un Bucket de Google Cloud Storage.
-        EXIGE que subfolder esté especificado (no se permite guardar en la ruta raíz directa).
+        Si avoid_overwrite=True, verifica los archivos existentes en la subcarpeta
+        y le asigna un consecutivo automático si el nombre ya existe.
         """
         if not self.bucket_name:
             raise ValueError("No se configuró el nombre del bucket de Google Cloud.")
@@ -282,8 +445,15 @@ class CloudStorageService:
             destination_blob_name = os.path.basename(file_path)
 
         # Only the image filename is uploaded; local or supplied parent folders are ignored.
-        image_name = destination_blob_name.replace("\\", "/").rsplit("/", 1)[-1]
+        raw_name = destination_blob_name.replace("\\", "/").rsplit("/", 1)[-1]
         clean_sub = subfolder.strip("/\\").replace("\\", "/") if subfolder else ""
+
+        # Si se debe evitar sobreescribir, resolver consecutivo
+        if avoid_overwrite and clean_sub:
+            image_name = self.resolve_non_colliding_name(clean_sub, raw_name)
+        else:
+            image_name = raw_name
+
         clean_base = self.base_folder.strip("/\\").replace("\\", "/") if self.base_folder else ""
         destination_blob_name = "/".join(
             part for part in (clean_base, clean_sub, image_name) if part

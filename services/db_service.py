@@ -38,7 +38,9 @@ def get_db_config() -> Dict[str, Any]:
         "database": getattr(config, "DB_DATABASE", os.getenv("DB_DATABASE", os.getenv("DB_NAME", "mysql"))),
         "user": getattr(config, "DB_USER", os.getenv("DB_USER", "root")),
         "password": getattr(config, "DB_PASSWORD", os.getenv("DB_PASSWORD", "password_123")),
-        "table": getattr(config, "DB_TABLE", "productos"),
+        "table": getattr(config, "DB_TABLE", os.getenv("DB_TABLE", "productos")),
+        "code_column": getattr(config, "DB_CODE_COLUMN", os.getenv("DB_CODE_COLUMN", "codigo")),
+        "image_column": getattr(config, "DB_IMAGE_COLUMN", os.getenv("DB_IMAGE_COLUMN", "imagenArray")),
         "api_endpoint": getattr(config, "DB_API_ENDPOINT", ""),
         "sync_mode": getattr(config, "DB_SYNC_MODE", "db")  # db, api, both
     }
@@ -62,10 +64,12 @@ def extract_gcp_relative_path(item: dict) -> str:
             return unquoted[idx:].replace("\\", "/")
 
     subfolder = item.get("folder_name", "").strip().strip("/\\")
-    fname = item.get("filename", "").strip()
+    fname = (item.get("uploaded_filename") or item.get("filename", "")).strip()
+    stem = Path(fname).stem
+    webp_name = f"{stem}.webp" if not fname.lower().endswith(".webp") else fname
     if subfolder:
-        return f"dependencias/img/productos/{subfolder}/{fname}".replace("\\", "/")
-    return f"dependencias/img/productos/{fname}".replace("\\", "/")
+        return f"dependencias/img/productos/{subfolder}/{webp_name}".replace("\\", "/")
+    return f"dependencias/img/productos/{webp_name}".replace("\\", "/")
 
 
 def extract_candidate_codes(item: dict) -> List[str]:
@@ -319,6 +323,8 @@ def post_image_records(
     user = c.get("user", "root")
     password = c.get("password", "")
     target_table = (c.get("table", "productos") or "productos").strip()
+    col_code = (c.get("code_column", "codigo") or "codigo").strip()
+    col_image = (c.get("image_column", "imagenArray") or "imagenArray").strip()
 
     # -----------------------------------------------------------------
     # 1. PROCESAMIENTO EN BASE DE DATOS (MySQL / HeidiSQL)
@@ -335,8 +341,14 @@ def post_image_records(
                 autocommit=True
             )
             with conn.cursor() as cur:
-                # Si la tabla es 'productos', actualizar campo imagenArray por codigo
-                if target_table.lower() == "productos":
+                # Comprobar si la tabla tiene la columna de búsqueda y la columna de imágenes
+                cur.execute(f"SHOW COLUMNS FROM `{target_table}` LIKE %s;", (col_code,))
+                has_col_code = cur.fetchone() is not None
+                cur.execute(f"SHOW COLUMNS FROM `{target_table}` LIKE %s;", (col_image,))
+                has_col_image = cur.fetchone() is not None
+
+                # Si tiene ambas columnas, actualizamos por código de forma dinámica
+                if has_col_code and has_col_image:
                     for item in items_to_save:
                         matched = None
                         matched_code = ""
@@ -345,7 +357,7 @@ def post_image_records(
                         for code_cand in item["candidate_codes"]:
                             if not code_cand:
                                 continue
-                            cur.execute("SELECT id, codigo, imagenArray FROM productos WHERE codigo = %s LIMIT 1;", (code_cand,))
+                            cur.execute(f"SELECT id, `{col_code}`, `{col_image}` FROM `{target_table}` WHERE `{col_code}` = %s LIMIT 1;", (code_cand,))
                             row = cur.fetchone()
                             if row:
                                 matched = row
@@ -356,7 +368,7 @@ def post_image_records(
                         if not matched:
                             stem = os.path.splitext(item["filename"])[0]
                             cur.execute(
-                                "SELECT id, codigo, imagenArray FROM productos WHERE %s LIKE CONCAT(codigo, '%%') ORDER BY LENGTH(codigo) DESC LIMIT 1;",
+                                f"SELECT id, `{col_code}`, `{col_image}` FROM `{target_table}` WHERE %s LIKE CONCAT(`{col_code}`, '%%') ORDER BY LENGTH(`{col_code}`) DESC LIMIT 1;",
                                 (stem,)
                             )
                             row = cur.fetchone()
@@ -369,9 +381,10 @@ def post_image_records(
                             try:
                                 arr = json.loads(current_arr_raw) if current_arr_raw else []
                                 if not isinstance(arr, list):
-                                    arr = []
+                                    # Si no es json lista, podría ser una ruta simple previa o texto
+                                    arr = [str(current_arr_raw)] if current_arr_raw else []
                             except Exception:
-                                arr = []
+                                arr = [str(current_arr_raw)] if current_arr_raw else []
 
                             # Limpiar placeholders de imagen base
                             cleaned_arr = [
@@ -384,12 +397,12 @@ def post_image_records(
                                 cleaned_arr.append(item["gcp_path"])
 
                             updated_json = json.dumps(cleaned_arr, ensure_ascii=False)
-                            cur.execute("UPDATE productos SET imagenArray = %s WHERE id = %s;", (updated_json, prod_id))
+                            cur.execute(f"UPDATE `{target_table}` SET `{col_image}` = %s WHERE id = %s;", (updated_json, prod_id))
                             results["db_updated"] += 1
                         else:
                             results["unmatched"].append(f"{item['filename']} (códigos probados: {item['candidate_codes']})")
                 else:
-                    # Inserción estándar si es otra tabla
+                    # Inserción estándar si la tabla tiene otra estructura (tabla de logs/imágenes)
                     insert_sql = f"""
                     INSERT INTO `{target_table}` (
                         filename, folder_name, relative_path, original_path, processed_path, cloud_url, format, status, processed_at

@@ -9,9 +9,10 @@ from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QPushButton, QFileDialog, QMessageBox, QStackedWidget,
     QProgressBar, QTableWidget, QTableWidgetItem, QHeaderView,
-    QFrame, QApplication, QSpinBox, QComboBox
+    QFrame, QApplication, QSpinBox, QComboBox, QProgressDialog,
+    QDialog, QTextEdit
 )
-from PySide6.QtCore import Qt, QThreadPool
+from PySide6.QtCore import Qt, QThreadPool, QThread, Signal
 
 import config
 from core.bg_remover import get_ai_session
@@ -26,6 +27,159 @@ from ui.dialog_preview import ImagePreviewDialog
 from ui.dialog_batch_config import BatchProcessConfigDialog
 from ui.dialog_touchup import ImageTouchupDialog
 from ui.theme import GLOBAL_THEME
+
+
+class GcpUploadSummaryDialog(QDialog):
+    """
+    Modal de informe tras la subida a GCP que permite seleccionar
+    y copiar todo el texto y las rutas generadas al portapapeles.
+    """
+    def __init__(self, summary_text: str, gcp_paths: List[str], parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Resultado de Subida a Google Cloud")
+        self.resize(680, 520)
+        self.setMinimumSize(550, 400)
+        self.gcp_paths = gcp_paths
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(12)
+        layout.setContentsMargins(16, 16, 16, 16)
+
+        lbl_title = QLabel("Resumen de Almacenamiento en Google Cloud")
+        lbl_title.setObjectName("h2")
+        layout.addWidget(lbl_title)
+
+        lbl_desc = QLabel("Puedes seleccionar cualquier parte del texto o copiar la lista completa:")
+        lbl_desc.setObjectName("caption")
+        layout.addWidget(lbl_desc)
+
+        self.txt_content = QTextEdit()
+        self.txt_content.setReadOnly(True)
+        self.txt_content.setPlainText(summary_text)
+        self.txt_content.setTextInteractionFlags(Qt.TextSelectableByMouse | Qt.TextSelectableByKeyboard)
+        layout.addWidget(self.txt_content)
+
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(10)
+
+        btn_copy_all = QPushButton("📋 Copiar Todo")
+        btn_copy_all.clicked.connect(self._copy_all)
+        btn_row.addWidget(btn_copy_all)
+
+        if self.gcp_paths:
+            btn_copy_paths = QPushButton("📁 Copiar solo rutas GCP")
+            btn_copy_paths.clicked.connect(self._copy_paths_only)
+            btn_row.addWidget(btn_copy_paths)
+
+        btn_row.addStretch()
+
+        btn_close = QPushButton("Cerrar")
+        btn_close.setObjectName("primaryBtn")
+        btn_close.clicked.connect(self.accept)
+        btn_row.addWidget(btn_close)
+
+        layout.addLayout(btn_row)
+
+    def _copy_all(self):
+        clipboard = QApplication.clipboard()
+        clipboard.setText(self.txt_content.toPlainText())
+        QMessageBox.information(self, "Copiado", "Se copió todo el informe al portapapeles.")
+
+    def _copy_paths_only(self):
+        if self.gcp_paths:
+            clipboard = QApplication.clipboard()
+            clipboard.setText("\n".join(self.gcp_paths))
+            QMessageBox.information(self, "Copiado", f"Se copiaron {len(self.gcp_paths)} rutas de GCP al portapapeles.")
+
+
+class GcpUploadThread(QThread):
+    progress = Signal(int, int, str)       # current, total, filename
+    finished = Signal(dict)               # results dict
+    error = Signal(str)                   # error message
+
+    def __init__(self, gcp_service, processed_files, current_records, base_folder, timeout_per_file=15):
+        super().__init__()
+        self.gcp_service = gcp_service
+        self.processed_files = list(processed_files)
+        self.current_records = current_records
+        self.base_folder = base_folder
+        self.timeout_per_file = timeout_per_file
+        self.is_cancelled = False
+
+    def cancel(self):
+        self.is_cancelled = True
+
+    def run(self):
+        try:
+            # 1. Test de conexion rápido
+            conn_test = self.gcp_service.test_connection()
+            if not conn_test.get("ok"):
+                self.error.emit(conn_test.get("message", "Error de conexión con GCP."))
+                return
+
+            if self.is_cancelled:
+                return
+
+            # 2. Obtener carpetas existentes
+            self.progress.emit(0, len(self.processed_files), "Consultando carpetas en Google Cloud...")
+            existing_folders = self.gcp_service.get_existing_folders()
+
+            uploaded_urls = []
+            errors_list = []
+            total = len(self.processed_files)
+
+            for idx, fpath in enumerate(self.processed_files, 1):
+                if self.is_cancelled:
+                    break
+
+                fname_curr = os.path.basename(fpath)
+                self.progress.emit(idx, total, f"Subiendo: {fname_curr}")
+
+                base_stem = Path(fpath).stem
+                rec_found = None
+                for orig in self.current_records:
+                    if Path(orig.get("filename", "")).stem == base_stem:
+                        rec_found = orig
+                        break
+
+                try:
+                    folder_candidate = rec_found.get("folder_name", "") if rec_found else ""
+                    val = self.gcp_service.resolve_product_folder(
+                        filename=fname_curr,
+                        existing_folders=existing_folders,
+                        folder_candidate=folder_candidate
+                    )
+                    target_sub = val["target_subfolder"]
+                    blob_name = fname_curr
+
+                    url = self.gcp_service.upload_file(
+                        fpath,
+                        destination_blob_name=blob_name,
+                        subfolder=target_sub,
+                        make_public=True,
+                        avoid_overwrite=True
+                    )
+                    if url:
+                        uploaded_urls.append(url)
+                        actual_uploaded_name = url.split("?")[0].rstrip("/").split("/")[-1]
+                        if rec_found:
+                            rec_found["cloud_url"] = url
+                            rec_found["folder_name"] = target_sub
+                            rec_found["uploaded_filename"] = actual_uploaded_name
+                            rec_found["processed"] = True
+                    else:
+                        errors_list.append(f"{fname_curr}: Fallo de red o permiso al subir.")
+                except Exception as ex:
+                    errors_list.append(f"{fname_curr}: {str(ex)}")
+
+            self.finished.emit({
+                "uploaded_urls": uploaded_urls,
+                "errors_list": errors_list,
+                "cancelled": self.is_cancelled
+            })
+
+        except Exception as e:
+            self.error.emit(str(e))
 
 
 class MainWindow(QMainWindow):
@@ -540,6 +694,17 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Error de Archivo", f"No se pudo cargar la imagen:\n{e}")
 
     def _set_records_and_go_summary(self, records: List[Dict[str, Any]], origin_label: str):
+        MAX_BATCH_LIMIT = 100
+        if len(records) > MAX_BATCH_LIMIT:
+            QMessageBox.warning(
+                self,
+                "Límite de Procesamiento (Máx. 100 imágenes)",
+                f"El directorio seleccionado contiene {len(records)} imágenes.\n\n"
+                f"Por rendimiento y estabilidad de la memoria, el límite por lote es de {MAX_BATCH_LIMIT} imágenes.\n"
+                f"Se procesarán las primeras {MAX_BATCH_LIMIT} imágenes. Para las restantes, procesa un nuevo lote posteriormente."
+            )
+            records = records[:MAX_BATCH_LIMIT]
+
         self.current_records = records
         self.current_summary = ImageIndexer.get_summary(records)
 
@@ -699,8 +864,12 @@ class MainWindow(QMainWindow):
             can_upload_item = False
 
             if upload_to_gcs and gcp_service:
-                # Determinar carpeta de producto en GCP EXCLUSIVAMENTE por el nombre de la imagen / código
-                val = gcp_service.resolve_product_folder(fname, existing_folders)
+                folder_candidate = rec.get("folder_name", "")
+                val = gcp_service.resolve_product_folder(
+                    filename=fname,
+                    existing_folders=existing_folders,
+                    folder_candidate=folder_candidate
+                )
                 target_subfolder = val["target_subfolder"]
                 can_upload_item = True
 
@@ -1002,6 +1171,10 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Error", f"No se pudieron copiar los archivos:\n{e}")
 
     def _handle_gcp_upload(self):
+        if not self.processed_files:
+            QMessageBox.warning(self, "Sin Imágenes", "No hay imágenes procesadas en el lote para subir a Google Cloud.")
+            return
+
         gcp_key = getattr(config, "GCS_CREDENTIALS_PATH", os.path.join(os.getcwd(), "credentials", "gcp_key.json"))
         if not os.path.exists(gcp_key):
             candidate = os.path.join(os.path.dirname(sys.executable), "credentials", "gcp_key.json")
@@ -1034,80 +1207,113 @@ class MainWindow(QMainWindow):
             base_folder=base_folder
         )
 
-        conn_test = gcp_service.test_connection()
-        if not conn_test["ok"]:
-            QMessageBox.warning(
-                self,
-                "Aviso de Google Cloud Storage",
-                conn_test["message"]
-            )
-            return
+        total_files = len(self.processed_files)
 
-        # 1. Obtener carpetas existentes en el bucket bajo base_folder
-        existing_folders = gcp_service.get_existing_folders()
+        # ---------------- MODAL DE PROGRESO CON TIMEOUT Y CANCELACIÓN ----------------
+        progress_dialog = QProgressDialog(
+            "Conectando con Google Cloud Storage...",
+            "Cancelar",
+            0,
+            total_files,
+            self
+        )
+        progress_dialog.setWindowTitle("Subiendo a Google Cloud")
+        progress_dialog.setWindowModality(Qt.WindowModal)
+        progress_dialog.setMinimumDuration(0)
+        progress_dialog.setValue(0)
+        progress_dialog.setAutoClose(False)
+        progress_dialog.setAutoReset(False)
 
-        uploaded_urls = []
-        rejected_files = {}
-        errors = 0
-
-        for fpath in self.processed_files:
-            base_stem = Path(fpath).stem
-            rec_found = None
-            for orig in self.current_records:
-                if Path(orig["filename"]).stem == base_stem:
-                    rec_found = orig
-                    break
-
-            fname_curr = os.path.basename(fpath)
-
-            # Determinar subcarpeta en GCP EXCLUSIVAMENTE por el nombre de la imagen / código
-            val = gcp_service.resolve_product_folder(fname_curr, existing_folders)
-            target_sub = val["target_subfolder"]
-            blob_name = fname_curr
-
-            url = gcp_service.upload_file(
-                fpath,
-                destination_blob_name=blob_name,
-                subfolder=target_sub,
-                make_public=True
-            )
-            if url:
-                uploaded_urls.append(url)
-                if rec_found:
-                    rec_found["cloud_url"] = url
-                    rec_found["folder_name"] = target_sub
-                    rec_found["processed"] = True
-            else:
-                errors += 1
-
-        # 3. Guardar mapa manifiesto JSON con las URLs de GCP
-        out_json = ImageIndexer.save_to_json(
-            self.current_records,
-            os.path.join(self.current_output_dir, "image_map.json")
+        # Iniciar hilo de subida en segundo plano (para no congelar la UI)
+        upload_thread = GcpUploadThread(
+            gcp_service=gcp_service,
+            processed_files=self.processed_files,
+            current_records=self.current_records,
+            base_folder=base_folder
         )
 
-        # 4. Registro automático en Base de Datos / Endpoint POST
-        db_report = ""
-        if uploaded_urls:
-            try:
-                db_res = post_image_records(self.current_records)
-                if db_res["ok"]:
-                    db_report = f"\n\n🗄️ Base de Datos:\n{db_res['message']}"
-                else:
-                    db_report = f"\n\n⚠️ Base de Datos:\n{db_res['message']}"
-            except Exception as e:
-                db_report = f"\n\n⚠️ Base de Datos: {e}"
+        progress_dialog.canceled.connect(upload_thread.cancel)
 
-        # 5. Mensaje con informe completo de validación y subida
-        msg_parts = [f"✅ Se subieron {len(uploaded_urls)} imágenes a Google Cloud Storage."]
-        if errors > 0:
-            msg_parts.append(f"\n❌ {errors} archivos tuvieron error de red al subir.")
+        def on_thread_progress(cur, tot, text):
+            progress_dialog.setLabelText(text)
+            progress_dialog.setValue(cur)
 
-        msg_parts.append(f"\n\nManifiesto de rutas generado en:\n{out_json}")
-        if db_report:
-            msg_parts.append(db_report)
+        def on_thread_error(err_msg):
+            progress_dialog.close()
+            QMessageBox.critical(
+                self,
+                "Error en Google Cloud Storage",
+                f"Ocurrió un error durante la comunicación con Google Cloud:\n\n{err_msg}"
+            )
 
-        QMessageBox.information(self, "Control de Contenido GCP y Base de Datos", "\n".join(msg_parts))
+        def on_thread_finished(res):
+            progress_dialog.close()
+            uploaded_urls = res.get("uploaded_urls", [])
+            errors_list = res.get("errors_list", [])
+            cancelled = res.get("cancelled", False)
+
+            # 3. Guardar manifiesto JSON con ÚNICAMENTE información de la subida a GCP (sin rutas locales)
+            cloud_manifest = ImageIndexer.build_cloud_manifest(
+                self.current_records,
+                base_folder=base_folder
+            )
+            out_json = ImageIndexer.save_to_json(
+                cloud_manifest,
+                os.path.join(self.current_output_dir, "image_map.json")
+            )
+
+            # 4. Registro automático en Base de Datos / Endpoint POST
+            db_report = ""
+            if uploaded_urls:
+                try:
+                    db_res = post_image_records(self.current_records)
+                    if db_res.get("ok"):
+                        db_report = f"\n\n🗄️ Base de Datos:\n{db_res.get('message', '')}"
+                    else:
+                        db_report = f"\n\n⚠️ Base de Datos:\n{db_res.get('message', '')}"
+                except Exception as e:
+                    db_report = f"\n\n⚠️ Base de Datos: {e}"
+
+            # 5. Mensaje con informe completo de validación y subida
+            if cancelled:
+                msg_parts = [f"⚠️ Subida cancelada por el usuario. Se subieron {len(uploaded_urls)} de {total_files} imágenes."]
+            else:
+                msg_parts = [f"✅ Se subieron {len(uploaded_urls)} de {total_files} imágenes a Google Cloud Storage."]
+
+            # Listado detallado de rutas relativas en GCP donde quedaron guardadas
+            gcp_paths = [item.get("ruta_relativa_gcp") for item in cloud_manifest if item.get("ruta_relativa_gcp") and item.get("url_publica_gcp")]
+            if gcp_paths:
+                msg_parts.append("\n📁 Rutas de almacenamiento en GCP:")
+                for p in gcp_paths:
+                    msg_parts.append(f" • {p}")
+
+            if errors_list:
+                msg_parts.append(f"\n❌ Errores ({len(errors_list)}):")
+                for err in errors_list:
+                    msg_parts.append(f" • {err}")
+
+            msg_parts.append(f"\n\nManifiesto de rutas generado en:\n{out_json}")
+            if db_report:
+                msg_parts.append(db_report)
+
+            # Mostrar el modal interactivo con texto seleccionable y botones de copiado
+            summary_dialog = GcpUploadSummaryDialog(
+                summary_text="\n".join(msg_parts),
+                gcp_paths=gcp_paths,
+                parent=self
+            )
+            summary_dialog.exec()
+
+        upload_thread.progress.connect(on_thread_progress)
+        upload_thread.error.connect(on_thread_error)
+        upload_thread.finished.connect(on_thread_finished)
+
+        # Guardar referencia para evitar recolección por Garbage Collector
+        self._active_upload_thread = upload_thread
+        self._active_progress_dialog = progress_dialog
+
+        upload_thread.start()
+        progress_dialog.show()
 
     def _handle_post_to_db(self):
         """Envía manualmente los registros del lote a la base de datos o Endpoint API."""

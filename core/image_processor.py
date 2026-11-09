@@ -6,19 +6,28 @@ from PIL import Image, ImageOps
 from PySide6.QtGui import QImage
 
 
-def get_object_bbox(img: Image.Image) -> tuple:
+def get_object_bbox(img: Image.Image, alpha_threshold: int = 20) -> tuple:
     """
-    Obtiene el cuadro delimitador (bounding box) exacto del objeto:
-    - Si la imagen tiene canal alfa con transparencias, usa el canal alfa.
-    - Si la imagen es opaca (fondo blanco), detecta los píxeles que no son blancos.
+    Obtiene el cuadro delimitador (bounding box) exacto y limpio del objeto:
+    - Filtra sombras residuales, halos semitransparentes o ruido de fondo de la IA
+      mediante un umbral mínimo de opacidad (alpha_threshold).
+    - Evita que píxeles casi invisibles en las esquinas o base desnivelan el centrado.
+    - Si la imagen es opaca (fondo blanco), detecta con precisión los píxeles no blancos.
     """
     if img.mode in ("RGBA", "LA"):
-        alpha = img.split()[-1]
-        extrema = alpha.getextrema()
-        if extrema[0] < 250:
-            bbox = alpha.getbbox()
-            if bbox:
-                return bbox
+        alpha = np.array(img.split()[-1])
+        # Píxeles con opacidad significativa (ignora halos casi transparentes <= alpha_threshold)
+        solid_mask = alpha > alpha_threshold
+        if solid_mask.any():
+            coords = np.argwhere(solid_mask)
+            y0, x0 = coords.min(axis=0)
+            y1, x1 = coords.max(axis=0) + 1
+            return (int(x0), int(y0), int(x1), int(y1))
+
+        # Fallback si todo el alfa es muy tenue
+        bbox = img.split()[-1].getbbox()
+        if bbox:
+            return bbox
 
     # Si es RGB o no tiene transparencia, aislar sobre fondo blanco (R, G, B >= 248)
     rgb = img.convert("RGB")
@@ -74,34 +83,34 @@ def resize_image(
         return fitted
 
     elif mode == "contain":
-        # 1. Recortar al objeto real eliminando márgenes vacíos o blancos
-        bbox = get_object_bbox(img)
+        # 1. Recortar al objeto real eliminando halos transparentes, sombras residuales o márgenes vacíos
+        bbox = get_object_bbox(img, alpha_threshold=20)
         if bbox:
             cropped_obj = img.crop(bbox)
         else:
             cropped_obj = img
 
-        # 2. Margen de respiro estético uniforme (8% estándar catálogo de productos)
+        # 2. Margen de respiro y nivelación estética para catálogo (ocupación del ~84% del lienzo)
+        # Margen del 8% en cada extremo asegura que el objeto no toque los bordes y quede nivelado
         pad = 0.08
         max_w = max(1, int(target_width * (1.0 - pad * 2)))
         max_h = max(1, int(target_height * (1.0 - pad * 2)))
 
-        # 3. Escalar proporcionalmente preservando la relación de aspecto del objeto
-        scale = min(max_w / cropped_obj.width, max_h / cropped_obj.height)
-        new_w = max(1, int(cropped_obj.width * scale))
-        new_h = max(1, int(cropped_obj.height * scale))
+        # 3. Escalar proporcionalmente preservando la máxima nitidez con filtro LANCZOS
+        scale = min(max_w / max(1, cropped_obj.width), max_h / max(1, cropped_obj.height))
+        new_w = max(1, int(round(cropped_obj.width * scale)))
+        new_h = max(1, int(round(cropped_obj.height * scale)))
         scaled_obj = cropped_obj.resize((new_w, new_h), Image.Resampling.LANCZOS)
 
-        # 4. Crear lienzo exacto de las medidas destino
-        # Si white_bg es True: fondo blanco puro (255, 255, 255, 255) en el 100% del lienzo
-        # Si white_bg es False: fondo transparente (0, 0, 0, 0)
+        # 4. Crear lienzo exacto de las medidas destino (blanco puro o transparente según opción)
         canvas_color = (255, 255, 255, 255) if white_bg else (0, 0, 0, 0)
         canvas = Image.new("RGBA", (target_width, target_height), canvas_color)
 
-        offset_x = (target_width - new_w) // 2
-        offset_y = (target_height - new_h) // 2
+        # 5. Centrado y nivelación milimétrica en el lienzo
+        offset_x = int(round((target_width - new_w) / 2.0))
+        offset_y = int(round((target_height - new_h) / 2.0))
 
-        # Pegar el objeto centrado usando su máscara alfa
+        # Pegar el objeto centrado usando su máscara alfa limpia
         canvas.paste(scaled_obj, (offset_x, offset_y), mask=scaled_obj.split()[3])
 
         if white_bg:

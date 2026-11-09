@@ -88,6 +88,38 @@ class ImageIndexer:
         }
 
     @staticmethod
+    def build_cloud_manifest(records: List[Dict[str, Any]], base_folder: str = "dependencias/img/productos/") -> List[Dict[str, Any]]:
+        """
+        Construye una estructura limpia con ÚNICAMENTE información de la subida a GCP y datos
+        de la imagen en nube (sin rutas locales como absolute_path, original_path o processed_path).
+        """
+        clean_base = base_folder.strip("/").replace("\\", "/")
+        manifest = []
+        for r in records:
+            fname = r.get("uploaded_filename") or r.get("filename", "")
+            # Si el archivo fue convertido a webp
+            stem = Path(fname).stem
+            webp_name = f"{stem}.webp" if not fname.lower().endswith(".webp") else fname
+            subfolder = (r.get("folder_name") or "").strip("/\\")
+            c_url = r.get("cloud_url") or ""
+
+            if subfolder:
+                gcp_path = f"{clean_base}/{subfolder}/{webp_name}"
+            else:
+                gcp_path = f"{clean_base}/{webp_name}"
+
+            manifest.append({
+                "codigo": subfolder or stem.split('-')[0].strip(),
+                "subcarpeta_gcp": subfolder,
+                "nombre_archivo": webp_name,
+                "formato": "WEBP",
+                "ruta_relativa_gcp": gcp_path,
+                "url_publica_gcp": c_url,
+                "estado": "SUBIDA_GCP" if c_url else "PROCESADA"
+            })
+        return manifest
+
+    @staticmethod
     def save_to_json(data: List[Dict[str, Any]], output_json_path: str = "output/image_map.json") -> str:
         """
         Guarda la lista de registros mapeados en un archivo JSON.
