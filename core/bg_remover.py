@@ -28,19 +28,8 @@ _DNN_LOCK = threading.Lock()
 
 def get_model_path() -> Optional[str]:
     """Localiza el archivo del modelo ONNX tanto en entorno de desarrollo como en ejecutable empaquetado."""
-    candidates = []
-    if hasattr(sys, "_MEIPASS"):
-        candidates.append(sys._MEIPASS)
-        candidates.append(os.path.join(sys._MEIPASS, "_internal"))
-    if getattr(sys, "frozen", False):
-        exe_dir = os.path.dirname(sys.executable)
-        candidates.append(exe_dir)
-        candidates.append(os.path.join(exe_dir, "_internal"))
-    candidates.append(str(Path(__file__).resolve().parent.parent))
-    candidates.append(os.path.join(str(Path(__file__).resolve().parent.parent), "_internal"))
-    candidates.append(os.getcwd())
-    candidates.append(os.path.join(os.getcwd(), "_internal"))
-
+    import app_paths
+    candidates = [str(p) for p in app_paths.resource_candidates()]
     for base in candidates:
         if base and os.path.exists(base):
             for m_name in ("u2net.onnx", "u2netp.onnx"):

@@ -1,4 +1,5 @@
 import os
+import app_paths
 import shutil
 import tempfile
 import config
@@ -147,7 +148,7 @@ class BatchTabWidget(QWidget):
                 
                 # Si el usuario no eligió una carpeta de salida previamente, asignar output/processed
                 if not self.batch_output_dir:
-                    self.batch_output_dir = os.path.join(os.getcwd(), "output", "processed")
+                    self.batch_output_dir = str(app_paths.processed_dir())
                     self.is_default_temp_output = False
                 
                 os.makedirs(self.batch_output_dir, exist_ok=True)

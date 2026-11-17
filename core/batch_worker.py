@@ -1,10 +1,8 @@
 import os
 from pathlib import Path
-from PIL import Image, ImageOps
 from PySide6.QtCore import QObject, QRunnable, Signal
 
-from core.image_processor import export_to_webp
-from core.bg_remover import process_remove_background
+from core.pipeline import BatchOptions, process_single_image
 from services.cloud_storage import CloudStorageService
 
 
@@ -46,46 +44,26 @@ class ImageBatchWorker(QRunnable):
     def run(self):
         try:
             self.signals.started.emit(self.file_path)
-            self.signals.progress.emit(self.file_path, "Cargando...")
-
-            raw_img = Image.open(self.file_path)
-            pil_img = ImageOps.exif_transpose(raw_img).convert("RGBA")
-
-            if self.remove_bg:
-                self.signals.progress.emit(self.file_path, "Aislando objeto (Fase 1 y 2)...")
-                pil_img = process_remove_background(pil_img, session=self.session)
-
-            self.signals.progress.emit(self.file_path, "Renderizando y optimizando WebP...")
-            base_name = Path(self.file_path).stem
-            
-            os.makedirs(self.output_dir, exist_ok=True)
-            output_webp_path = os.path.join(self.output_dir, f"{base_name}.webp")
-
-            export_to_webp(
-                pil_image=pil_img,
-                output_path=output_webp_path,
+            options = BatchOptions(
                 quality=self.quality,
-                method=6,
-                resize_config=self.resize_config,
-                white_bg=self.white_bg
+                remove_bg=self.remove_bg,
+                white_bg=self.white_bg,
+                resize_enabled=bool(self.resize_config and self.resize_config.get("enabled", False)),
+                width=(self.resize_config or {}).get("width", 900),
+                height=(self.resize_config or {}).get("height", 900),
+                resize_mode=(self.resize_config or {}).get("mode", "contain"),
+                upload_gcs=self.upload_to_cloud,
             )
-
-            cloud_url = ""
-            if self.upload_to_cloud and self.cloud_service:
-                self.signals.progress.emit(self.file_path, "Subiendo a GCP...")
-                destination_blob_name = os.path.basename(output_webp_path)
-                
-                res_url = self.cloud_service.upload_file(
-                    output_webp_path, 
-                    destination_blob_name=destination_blob_name,
-                    subfolder=self.target_subfolder,
-                    make_public=True
-                )
-                if res_url:
-                    cloud_url = res_url
-
-            self.signals.finished.emit(self.file_path, output_webp_path, cloud_url)
+            result = process_single_image(
+                self.file_path,
+                self.output_dir,
+                options,
+                session=self.session,
+                cloud_service=self.cloud_service if self.upload_to_cloud else None,
+                target_subfolder=self.target_subfolder,
+                progress=self.signals.progress.emit,
+            )
+            self.signals.finished.emit(self.file_path, result.output_path, result.cloud_url)
 
         except Exception as e:
-            err_str = str(e)
-            self.signals.error.emit(self.file_path, err_str)
+            self.signals.error.emit(self.file_path, str(e))

@@ -70,6 +70,7 @@ venv.bak/
 build/
 dist/
 *.spec
+!bg_app.spec
 *.egg-info/
 *.egg
 
@@ -78,6 +79,7 @@ dist/
 # ==========================================
 *.log
 logs/
+jobs/
 *.tmp
 *.temp
 

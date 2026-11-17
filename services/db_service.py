@@ -1,5 +1,4 @@
 import os
-import sys
 import json
 import requests
 import urllib.parse
@@ -9,7 +8,6 @@ from typing import Dict, Any, List, Union
 
 try:
     import pymysql
-    from pymysql.constants import CLIENT
     PYMYSQL_AVAILABLE = True
 except ImportError:
     pymysql = None
@@ -18,7 +16,6 @@ except ImportError:
 try:
     import psycopg2
     from psycopg2 import sql
-    from psycopg2.extras import RealDictCursor
     PSYCOPG2_AVAILABLE = True
 except ImportError:
     psycopg2 = None
@@ -42,8 +39,21 @@ def get_db_config() -> Dict[str, Any]:
         "code_column": getattr(config, "DB_CODE_COLUMN", os.getenv("DB_CODE_COLUMN", "codigo")),
         "image_column": getattr(config, "DB_IMAGE_COLUMN", os.getenv("DB_IMAGE_COLUMN", "imagenArray")),
         "api_endpoint": getattr(config, "DB_API_ENDPOINT", ""),
-        "sync_mode": getattr(config, "DB_SYNC_MODE", "db")  # db, api, both
+        "sync_mode": getattr(config, "DB_SYNC_MODE", "db"),  # db, api, both
+        "engine": getattr(config, "DB_ENGINE", ""),  # mysql, postgres o vacío (se deduce del puerto)
+        "schema": getattr(config, "DB_SCHEMA", "public"),
+        "company_id": getattr(config, "DB_COMPANY_ID", ""),
     }
+
+
+def resolve_engine(c: Dict[str, Any]) -> str:
+    """Motor de la base de productos: el elegido en Ajustes o, si no hay, el que indica el puerto (comportamiento anterior)."""
+    engine = (c.get("engine") or "").strip().lower()
+    if engine in ("mysql", "mariadb"):
+        return "mysql"
+    if engine in ("postgres", "postgresql", "pg"):
+        return "postgres"
+    return "mysql" if is_mysql_port(int(c.get("port", 3306) or 3306)) else "postgres"
 
 
 def is_mysql_port(port: int) -> bool:
@@ -51,25 +61,43 @@ def is_mysql_port(port: int) -> bool:
     return port in (3306, 3307, 3308)
 
 
+def _base_folder() -> str:
+    folder = (getattr(config, "GCS_BASE_FOLDER", "") or "").strip().strip("/\\").replace("\\", "/")
+    return folder
+
+
 def extract_gcp_relative_path(item: dict) -> str:
     """
-    Extrae la ruta relativa estándar para el catálogo (ej: dependencias/img/productos/{codigo}/{archivo}.webp)
-    a partir del cloud_url o de las rutas relativas.
+    Ruta relativa con la que se consume la imagen (ej: dependencias/img/productos/{codigo}/{archivo}.webp).
+    Es exactamente el nombre del objeto en el bucket: la interfaz la concatena con su URL base del bucket.
     """
-    cloud_url = item.get("cloud_url", "")
-    if cloud_url and "dependencias/" in cloud_url:
-        unquoted = urllib.parse.unquote(cloud_url)
-        idx = unquoted.find("dependencias/")
-        if idx != -1:
-            return unquoted[idx:].replace("\\", "/")
+    cloud_url = (item.get("cloud_url") or "").strip()
+    if cloud_url:
+        unquoted = urllib.parse.unquote(cloud_url).split("?", 1)[0]
+        bucket = (getattr(config, "GCS_BUCKET_NAME", "") or "").strip("/")
+        prefixes = []
+        try:
+            prefixes.append(config.public_base_url())
+        except Exception:
+            pass
+        if bucket:
+            prefixes += [f"https://storage.googleapis.com/{bucket}/", f"https://{bucket}.storage.googleapis.com/",
+                         f"http://storage.googleapis.com/{bucket}/"]
+        for prefix in prefixes:
+            if prefix and unquoted.startswith(prefix):
+                return unquoted[len(prefix):].lstrip("/").replace("\\", "/")
+        folder = _base_folder()
+        if folder and folder in unquoted:
+            return unquoted[unquoted.index(folder):].replace("\\", "/")
+        if "dependencias/" in unquoted:
+            return unquoted[unquoted.index("dependencias/"):].replace("\\", "/")
 
     subfolder = item.get("folder_name", "").strip().strip("/\\")
     fname = (item.get("uploaded_filename") or item.get("filename", "")).strip()
     stem = Path(fname).stem
     webp_name = f"{stem}.webp" if not fname.lower().endswith(".webp") else fname
-    if subfolder:
-        return f"dependencias/img/productos/{subfolder}/{webp_name}".replace("\\", "/")
-    return f"dependencias/img/productos/{webp_name}".replace("\\", "/")
+    parts = [p for p in (_base_folder(), subfolder, webp_name) if p]
+    return "/".join(parts).replace("\\", "/")
 
 
 def extract_candidate_codes(item: dict) -> List[str]:
@@ -109,8 +137,8 @@ def test_db_connection(cfg: Dict[str, Any] = None) -> Dict[str, Any]:
     password = c.get("password", "")
     target_table = (c.get("table", "productos") or "productos").strip()
 
-    # 1. Conexión MySQL / MariaDB (HeidiSQL)
-    if is_mysql_port(port) or PYMYSQL_AVAILABLE:
+    # 1. Conexión MySQL / MariaDB (HeidiSQL): misma lógica de siempre
+    if resolve_engine(c) == "mysql":
         if not PYMYSQL_AVAILABLE:
             return {"ok": False, "message": "El controlador 'pymysql' no está instalado en Python."}
 
@@ -164,46 +192,8 @@ def test_db_connection(cfg: Dict[str, Any] = None) -> Dict[str, Any]:
                 "message": f"Fallo al conectar con MySQL ({host}:{port}/{dbname}):\n{e}"
             }
 
-    # 2. Conexión PostgreSQL (fallback si es puerto 5432)
-    if PSYCOPG2_AVAILABLE:
-        try:
-            conn = psycopg2.connect(
-                host=host,
-                port=port,
-                dbname=dbname,
-                user=user,
-                password=password,
-                connect_timeout=4
-            )
-            with conn.cursor() as cur:
-                cur.execute(f"""
-                CREATE TABLE IF NOT EXISTS "{target_table}" (
-                    id SERIAL PRIMARY KEY,
-                    filename VARCHAR(255),
-                    folder_name VARCHAR(255),
-                    relative_path TEXT,
-                    processed_path TEXT,
-                    cloud_url TEXT,
-                    status VARCHAR(50) DEFAULT 'PROCESADA',
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    processed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                );
-                """)
-                conn.commit()
-                cur.execute(f"SELECT COUNT(*) FROM \"{target_table}\";")
-                count = cur.fetchone()[0]
-            conn.close()
-            return {
-                "ok": True,
-                "message": f"Conexión exitosa a PostgreSQL.\n• Base de datos: '{dbname}'\n• Tabla: '{target_table}' ({count} registros)"
-            }
-        except Exception as e:
-            return {
-                "ok": False,
-                "message": f"Fallo al conectar con PostgreSQL ({host}:{port}/{dbname}):\n{e}"
-            }
-
-    return {"ok": False, "message": "No se encontró ningún controlador compatible (pymysql o psycopg2)."}
+    # 2. Conexión PostgreSQL: solo lee, nunca crea tablas
+    return _pg_test(c)
 
 
 def test_api_endpoint(endpoint_url: str = None) -> Dict[str, Any]:
@@ -329,7 +319,8 @@ def post_image_records(
     # -----------------------------------------------------------------
     # 1. PROCESAMIENTO EN BASE DE DATOS (MySQL / HeidiSQL)
     # -----------------------------------------------------------------
-    if sync_mode in ("db", "both") and is_mysql_port(port) and PYMYSQL_AVAILABLE:
+    engine = resolve_engine(c)
+    if sync_mode in ("db", "both") and engine == "mysql" and PYMYSQL_AVAILABLE:
         try:
             conn = pymysql.connect(
                 host=host,
@@ -425,45 +416,27 @@ def post_image_records(
             results["errors"].append(f"MySQL (HeidiSQL): {e}")
 
     # -----------------------------------------------------------------
-    # 2. PROCESAMIENTO EN BASE DE DATOS (PostgreSQL Fallback en 5432)
+    # 2. PROCESAMIENTO EN BASE DE DATOS (PostgreSQL): agrega la ruta al arreglo de imágenes del producto
     # -----------------------------------------------------------------
-    elif sync_mode in ("db", "both") and not is_mysql_port(port) and PSYCOPG2_AVAILABLE:
-        try:
-            conn = psycopg2.connect(
-                host=host,
-                port=port,
-                dbname=dbname,
-                user=user,
-                password=password,
-                connect_timeout=4
-            )
-            with conn.cursor() as cur:
-                insert_sql = f"""
-                INSERT INTO "{target_table}" (
-                    filename, folder_name, relative_path, original_path, processed_path, cloud_url, format, status, processed_at
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW());
-                """
-                for item in items_to_save:
-                    cur.execute(insert_sql, (
-                        item["filename"],
-                        item["folder_name"],
-                        item["relative_path"],
-                        item["original_path"],
-                        item["processed_path"],
-                        item["cloud_url"],
-                        item["format"],
-                        item["status"]
-                    ))
-                conn.commit()
-            conn.close()
-            results["db_inserted"] = len(items_to_save)
-        except Exception as e:
-            results["errors"].append(f"PostgreSQL: {e}")
+    elif sync_mode in ("db", "both") and engine == "postgres":
+        if not PSYCOPG2_AVAILABLE:
+            results["errors"].append("PostgreSQL: el controlador 'psycopg2' no está instalado.")
+        else:
+            try:
+                pg = _pg_update_images(c, items_to_save)
+                results["db_updated"] = pg["added"]
+                results["already"] = pg["already"]
+                results["unmatched"] += pg["unmatched"]
+            except Exception as e:
+                results["errors"].append(f"PostgreSQL: {_safe_error(e, password)}")
+    elif sync_mode in ("db", "both") and engine == "mysql" and not PYMYSQL_AVAILABLE:
+        results["errors"].append("MySQL: el controlador 'pymysql' no está instalado.")
 
     # -----------------------------------------------------------------
     # 3. ENVÍO HTTP POST AL ENDPOINT API (Base URL)
     # -----------------------------------------------------------------
-    if (sync_mode in ("api", "both") or endpoint_url) and endpoint_url:
+    # Solo se envía a la API si el modo lo pide ("Solo Base de Datos" no debe hacer POST)
+    if sync_mode in ("api", "both") and endpoint_url:
         payload = {
             "total": len(items_to_save),
             "timestamp": datetime.now().isoformat(),
@@ -483,14 +456,43 @@ def post_image_records(
         except Exception as e:
             results["errors"].append(f"API POST: {e}")
 
-    # Construir mensaje de respuesta
-    if results["errors"] and results["db_updated"] == 0 and results["db_inserted"] == 0 and results["api_saved"] == 0:
+    # Construir mensaje de respuesta: solo se informa "error" cuando realmente hubo uno
+    def _unmatched_lines(limit=10):
+        lines = [f"  - {um}" for um in results["unmatched"][:limit]]
+        if len(results["unmatched"]) > limit:
+            lines.append(f"  ... y {len(results['unmatched']) - limit} más.")
+        return lines
+
+    engine_label = "PostgreSQL" if engine == "postgres" else "MySQL"
+    already = results.get("already", 0)
+    saved_any = results["db_updated"] > 0 or results["db_inserted"] > 0 or results["api_saved"] > 0 or already > 0
+    if not saved_any and results["errors"]:
         results["ok"] = False
-        results["message"] = "Falló el registro en base de datos:\n" + "\n".join(results["errors"])
+        msg_parts = ["❌ Falló el registro:"] + [f"  - {e}" for e in results["errors"]]
+        if results["unmatched"]:
+            msg_parts.append(f"\nAdemás, {len(results['unmatched'])} imagen(es) sin producto coincidente en `{target_table}`:")
+            msg_parts += _unmatched_lines()
+        results["message"] = "\n".join(msg_parts)
+    elif not saved_any and results["unmatched"]:
+        results["ok"] = False
+        results["message"] = "\n".join(
+            [f"⚠️ No se registró ninguna imagen: ninguna coincide con un producto en `{target_table}.{col_code}`.",
+             "La conexión a la base de datos funcionó correctamente.", ""]
+            + _unmatched_lines()
+            + ["", "Nombre la imagen o su carpeta con el código exacto del producto (ej: 36DK0076-1)."]
+        )
+    elif not saved_any:
+        results["ok"] = False
+        results["message"] = (
+            f"⚠️ No se realizó ningún registro (modo de envío: '{sync_mode}'). "
+            "Revise el modo de envío y los datos de conexión en Configuración."
+        )
     else:
         msg_parts = [f"✅ Procesamiento completado ({len(items_to_save)} imágenes):"]
         if results["db_updated"] > 0:
-            msg_parts.append(f"• Productos actualizados en MySQL (`{target_table}.imagenArray`): {results['db_updated']}")
+            msg_parts.append(f"• Productos actualizados en {engine_label} (`{target_table}.{col_image}`): {results['db_updated']}")
+        if already > 0:
+            msg_parts.append(f"• Imágenes que el producto ya tenía (no se duplican): {already}")
         if results["db_inserted"] > 0:
             msg_parts.append(f"• Filas insertadas en DB (`{target_table}`): {results['db_inserted']}")
         if results["api_saved"] > 0:
@@ -524,3 +526,233 @@ def sync_from_json_manifest(json_path: str, cfg: Dict[str, Any] = None) -> Dict[
         return post_image_records(data, cfg=cfg)
     except Exception as e:
         return {"ok": False, "message": f"Error leyendo archivo JSON:\n{e}"}
+
+
+# =============================================================================
+# POSTGRESQL (getion2import: products.code + products.images TEXT[])
+# =============================================================================
+PLACEHOLDER_IMAGES = ("imagen_base_productos.png", "blanco.png")
+
+
+def _safe_error(err: Exception, password: str = "") -> str:
+    """Texto del error sin la contraseña (por si el driver la repite)."""
+    if isinstance(err, UnicodeDecodeError):
+        # en Windows el servidor responde en su idioma (WIN1252) antes de autenticar: casi siempre es usuario o contraseña
+        return ("El servidor rechazó la conexión (su mensaje llegó en otra codificación). "
+                "Revise usuario, contraseña, base de datos y que el servidor acepte conexiones desde este equipo.")
+    text = str(err).strip()
+    if password:
+        text = text.replace(password, "***")
+    return text
+
+
+def _pg_connect(c: Dict[str, Any]):
+    schema = (c.get("schema") or "public").strip() or "public"
+    return psycopg2.connect(
+        host=c.get("host", "localhost"),
+        port=int(c.get("port", 5432)),
+        dbname=c.get("database", "postgres"),
+        user=c.get("user", "postgres"),
+        password=c.get("password", ""),
+        connect_timeout=4,
+        options=f"-c search_path={schema}",
+        application_name="bg_app",
+    )
+
+
+def _pg_columns(cur, schema: str, table: str) -> Dict[str, Dict[str, str]]:
+    """Columnas reales de la tabla: nombre exacto -> tipo (data_type, udt_name)."""
+    cur.execute(
+        "SELECT column_name, data_type, udt_name FROM information_schema.columns "
+        "WHERE table_schema = %s AND table_name = %s",
+        (schema, table),
+    )
+    return {r[0]: {"data_type": r[1], "udt_name": r[2]} for r in cur.fetchall()}
+
+
+def _pg_find_column(columns: Dict[str, Dict[str, str]], wanted: str) -> str:
+    """Nombre exacto de la columna (respeta mayúsculas; si no, compara sin distinguirlas)."""
+    if wanted in columns:
+        return wanted
+    for name in columns:
+        if name.lower() == wanted.lower():
+            return name
+    return ""
+
+
+def _pg_company_id(c: Dict[str, Any]):
+    raw = str(c.get("company_id") or "").strip()
+    return int(raw) if raw.isdigit() else None
+
+
+def _pg_test(c: Dict[str, Any]) -> Dict[str, Any]:
+    """Prueba la conexión a PostgreSQL: valida tabla y columnas e informa el tipo de la columna de imágenes. No crea nada."""
+    if not PSYCOPG2_AVAILABLE:
+        return {"ok": False, "message": "El controlador 'psycopg2' no está instalado en Python."}
+    host, port, dbname = c.get("host", "localhost"), int(c.get("port", 5432)), c.get("database", "")
+    schema = (c.get("schema") or "public").strip() or "public"
+    table = (c.get("table") or "products").strip()
+    company_id = _pg_company_id(c)
+    try:
+        conn = _pg_connect(c)
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT version();")
+                version = cur.fetchone()[0].split(",")[0]
+                columns = _pg_columns(cur, schema, table)
+                if not columns:
+                    return {"ok": False, "message": (
+                        f"Conexión correcta a PostgreSQL ({version}), pero la tabla '{schema}.{table}' no existe.\n\n"
+                        "Revise el nombre de la tabla en Ajustes (para getion2import: products). No se creó nada.")}
+                col_code = _pg_find_column(columns, (c.get("code_column") or "code").strip())
+                col_image = _pg_find_column(columns, (c.get("image_column") or "images").strip())
+                missing = [n for n, v in (("código", col_code), ("imágenes", col_image)) if not v]
+                if missing:
+                    return {"ok": False, "message": (
+                        f"Conexión correcta a PostgreSQL, pero en '{schema}.{table}' no existe la columna de {' ni la de '.join(missing)}.\n\n"
+                        f"Columnas disponibles: {', '.join(sorted(columns))}")}
+                img_type = columns[col_image]
+                type_label = "arreglo de texto (TEXT[])" if img_type["data_type"] == "ARRAY" else img_type["data_type"]
+                where, params = [], []
+                if "deleted_at" in columns:
+                    where.append("deleted_at IS NULL")
+                if company_id is not None and "company_id" in columns:
+                    where.append("company_id = %s")
+                    params.append(company_id)
+                query = sql.SQL("SELECT COUNT(*) FROM {}").format(sql.Identifier(schema, table))
+                if where:
+                    query = query + sql.SQL(" WHERE " + " AND ".join(where))
+                cur.execute(query, params)
+                count = cur.fetchone()[0]
+        finally:
+            conn.rollback()
+            conn.close()
+        company_txt = f"\n• Compañía: {company_id}" if company_id is not None else "\n• Compañía: todas (sin filtro)"
+        return {"ok": True, "message": (
+            f"Conexión exitosa a PostgreSQL.\n\n"
+            f"• Servidor: {version}\n• {host}:{port} / base '{dbname}'\n"
+            f"• Tabla: '{schema}.{table}' ({count:,} productos activos){company_txt}\n"
+            f"• Columna de código: '{col_code}'\n• Columna de imágenes: '{col_image}' ({type_label})")}
+    except Exception as e:
+        return {"ok": False, "message": f"Fallo al conectar con PostgreSQL ({host}:{port}/{dbname}):\n{_safe_error(e, c.get('password', ''))}"}
+
+
+def _merge_images(current, new_path: str):
+    """Lista de imágenes sin rellenos y con la ruta nueva al final (sin duplicar). Devuelve (lista, agregada)."""
+    if isinstance(current, list):
+        arr = [str(x) for x in current if x]
+    elif current in (None, ""):
+        arr = []
+    else:
+        try:
+            parsed = json.loads(current) if isinstance(current, str) else current
+            arr = [str(x) for x in parsed if x] if isinstance(parsed, list) else [str(current)]
+        except Exception:
+            arr = [str(current)]
+    arr = [x for x in arr if not any(ph in x for ph in PLACEHOLDER_IMAGES)]
+    if new_path in arr:
+        return arr, False
+    return arr + [new_path], True
+
+
+def _pg_update_images(c: Dict[str, Any], items: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    Agrega la ruta de cada imagen a la columna de imágenes del producto que corresponde a su código.
+    Busca por código exacto, luego por códigos alternos (product_codes) y luego por el prefijo más largo.
+    Nunca toca productos borrados; con compañía configurada solo busca en ella; un código repetido en varias
+    compañías sin compañía configurada no se registra (se informa como ambiguo). Todo va en una transacción.
+    """
+    schema = (c.get("schema") or "public").strip() or "public"
+    table = (c.get("table") or "products").strip()
+    out = {"added": 0, "already": 0, "unmatched": [], "ambiguous": []}
+    conn = _pg_connect(c)
+    try:
+        with conn.cursor() as cur:
+            columns = _pg_columns(cur, schema, table)
+            if not columns:
+                raise RuntimeError(f"la tabla '{schema}.{table}' no existe")
+            col_code = _pg_find_column(columns, (c.get("code_column") or "code").strip())
+            col_image = _pg_find_column(columns, (c.get("image_column") or "images").strip())
+            if not col_code or not col_image:
+                raise RuntimeError(f"en '{schema}.{table}' faltan las columnas de código o de imágenes")
+            is_array = columns[col_image]["data_type"] == "ARRAY"
+            has_deleted = "deleted_at" in columns
+            has_company = "company_id" in columns
+            has_updated = "updated_at" in columns
+            company_id = _pg_company_id(c)
+            cur.execute("SELECT to_regclass(%s) IS NOT NULL", (f"{schema}.product_codes",))
+            has_alt_codes = bool(cur.fetchone()[0]) and has_company
+
+            tbl = sql.Identifier(schema, table)
+            code_id, image_id = sql.Identifier(col_code), sql.Identifier(col_image)
+            filters, base_params = [], []
+            if has_deleted:
+                filters.append(sql.SQL("p.deleted_at IS NULL"))
+            if company_id is not None and has_company:
+                filters.append(sql.SQL("p.company_id = %s"))
+                base_params.append(company_id)
+            extra = sql.SQL("").join(sql.SQL(" AND ") + f for f in filters)
+            company_col = sql.SQL("p.company_id") if has_company else sql.SQL("NULL")
+
+            def find(where_sql, params):
+                q = (sql.SQL("SELECT p.id, {comp} FROM {tbl} p WHERE ").format(comp=company_col, tbl=tbl)
+                     + where_sql + extra + sql.SQL(" LIMIT 3"))
+                cur.execute(q, params + base_params)
+                return cur.fetchall()
+
+            for item in items:
+                rows, used = [], ""
+                for code in item["candidate_codes"]:
+                    if not code:
+                        continue
+                    rows = find(sql.SQL("p.{} = %s").format(code_id), [code])
+                    if not rows and has_alt_codes:
+                        rows = find(sql.SQL(
+                            "p.id IN (SELECT pc.product_id FROM {} pc WHERE pc.code = %s AND pc.company_id = p.company_id)"
+                        ).format(sql.Identifier(schema, "product_codes")), [code])
+                    if rows:
+                        used = code
+                        break
+                if not rows:
+                    stem = os.path.splitext(item["filename"])[0]
+                    q = (sql.SQL("SELECT p.id, {comp}, p.{code} FROM {tbl} p WHERE %s LIKE p.{code} || '%%' AND length(p.{code}) > 0").format(
+                        comp=company_col, code=code_id, tbl=tbl)
+                         + extra + sql.SQL(" ORDER BY length(p.{}) DESC LIMIT 3").format(code_id))
+                    cur.execute(q, [stem] + base_params)
+                    found = cur.fetchall()
+                    if found:
+                        longest = len(found[0][2])
+                        rows = [(r[0], r[1]) for r in found if len(r[2]) == longest]
+                        used = found[0][2]
+                if not rows:
+                    out["unmatched"].append(f"{item['filename']} (códigos probados: {item['candidate_codes']})")
+                    continue
+                if len(rows) > 1:
+                    out["ambiguous"].append(item["filename"])
+                    out["unmatched"].append(f"{item['filename']} (el código {used} existe en varias compañías: configure la compañía en Ajustes)")
+                    continue
+
+                product_id = rows[0][0]
+                cur.execute(sql.SQL("SELECT {img} FROM {tbl} WHERE id = %s FOR UPDATE").format(img=image_id, tbl=tbl), [product_id])
+                current = cur.fetchone()[0]
+                merged, added = _merge_images(current, item["gcp_path"])
+                original = current if isinstance(current, list) else None
+                if not added and original == merged:
+                    out["already"] += 1
+                    continue
+                value = merged if is_array else json.dumps(merged, ensure_ascii=False)
+                set_sql = sql.SQL("{img} = %s").format(img=image_id)
+                if has_updated:
+                    set_sql = set_sql + sql.SQL(", updated_at = CURRENT_TIMESTAMP")
+                cur.execute(sql.SQL("UPDATE {tbl} SET ").format(tbl=tbl) + set_sql + sql.SQL(" WHERE id = %s"), [value, product_id])
+                if added:
+                    out["added"] += 1
+                else:
+                    out["already"] += 1
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+    return out

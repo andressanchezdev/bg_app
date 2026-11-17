@@ -422,6 +422,18 @@ class CloudStorageService:
             folder_candidate=folder_name
         )
 
+    def public_url(self, blob_name: str) -> str:
+        """URL pública de un objeto: la base configurada en Ajustes (si es de este bucket) + el nombre del objeto."""
+        base = f"https://storage.googleapis.com/{self.bucket_name}/"
+        try:
+            import config
+            if (getattr(config, "GCS_BUCKET_NAME", "") or "") == (self.bucket_name or ""):
+                base = config.public_base_url()
+        except Exception:
+            pass
+        from urllib.parse import quote
+        return base.rstrip("/") + "/" + quote(blob_name.lstrip("/"), safe="/")
+
     def upload_file(
         self,
         file_path: str,
@@ -469,11 +481,11 @@ class CloudStorageService:
             if make_public:
                 try:
                     blob.make_public()
-                    return blob.public_url
                 except Exception:
                     pass
 
-            return f"https://storage.googleapis.com/{self.bucket_name}/{destination_blob_name}"
+            # la URL de consumo sale de la URL pública configurada (Ajustes) + el nombre exacto del objeto
+            return self.public_url(destination_blob_name)
 
         except Exception as e:
             human_error = format_gcp_error(e, self.bucket_name)

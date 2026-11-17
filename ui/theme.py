@@ -306,5 +306,104 @@ QGroupBox::title {{
     left: 8px;
     padding: 0 4px;
 }}
+
+/* --- SUPERFICIES QUE TOMABAN EL FONDO DE WINDOWS (blanco en modo claro) --- */
+QMessageBox {{
+    background-color: {COLOR_BG_ROOT};
+}}
+QScrollArea, QScrollArea > QWidget > QWidget {{
+    background-color: {COLOR_BG_ROOT};
+}}
+QTextEdit, QPlainTextEdit, QListView, QListWidget, QTreeView {{
+    background-color: {COLOR_BG_SURFACE};
+    color: {COLOR_TEXT_PRIMARY};
+    border: 1px solid {COLOR_BORDER_DEFAULT};
+    border-radius: 6px;
+}}
+QComboBox QAbstractItemView {{
+    background-color: {COLOR_BG_SURFACE};
+    color: {COLOR_TEXT_PRIMARY};
+    border: 1px solid {COLOR_BORDER_HOVER};
+    selection-background-color: {COLOR_BG_ACTIVE};
+    selection-color: {COLOR_TEXT_PRIMARY};
+    outline: 0;
+}}
+QMenu {{
+    background-color: {COLOR_BG_SURFACE};
+    color: {COLOR_TEXT_PRIMARY};
+    border: 1px solid {COLOR_BORDER_DEFAULT};
+    padding: 4px;
+}}
+QMenu::item {{
+    padding: 6px 18px;
+    border-radius: 4px;
+}}
+QMenu::item:selected {{
+    background-color: {COLOR_BG_ACTIVE};
+}}
+QMenu::item:disabled {{
+    color: {COLOR_TEXT_MUTED};
+}}
+QScrollBar:vertical {{
+    background: {COLOR_BG_ROOT};
+    width: 10px;
+    margin: 0;
+}}
+QScrollBar:horizontal {{
+    background: {COLOR_BG_ROOT};
+    height: 10px;
+    margin: 0;
+}}
+QScrollBar::handle:vertical, QScrollBar::handle:horizontal {{
+    background: {COLOR_BORDER_HOVER};
+    border-radius: 4px;
+    min-height: 24px;
+    min-width: 24px;
+}}
+QScrollBar::handle:hover {{
+    background: {COLOR_TEXT_MUTED};
+}}
+QScrollBar::add-line, QScrollBar::sub-line, QScrollBar::add-page, QScrollBar::sub-page {{
+    background: none;
+    border: none;
+    width: 0;
+    height: 0;
+}}
+QToolTip {{
+    background-color: {COLOR_BG_SURFACE};
+    color: {COLOR_TEXT_PRIMARY};
+    border: 1px solid {COLOR_BORDER_HOVER};
+    padding: 4px 6px;
+}}
 """
+
+
+def apply_app_theme(app) -> None:
+    """
+    Paleta oscura de respaldo para toda la aplicación: cualquier control o ventana emergente
+    que la hoja de estilos no cubra deja de heredar los colores claros de Windows.
+    """
+    from PySide6.QtGui import QColor, QPalette
+
+    pal = QPalette()
+    roles = {
+        QPalette.Window: COLOR_BG_ROOT,
+        QPalette.WindowText: COLOR_TEXT_PRIMARY,
+        QPalette.Base: COLOR_BG_SURFACE,
+        QPalette.AlternateBase: COLOR_BG_HOVER,
+        QPalette.Text: COLOR_TEXT_PRIMARY,
+        QPalette.Button: COLOR_BG_SURFACE,
+        QPalette.ButtonText: COLOR_TEXT_PRIMARY,
+        QPalette.ToolTipBase: COLOR_BG_SURFACE,
+        QPalette.ToolTipText: COLOR_TEXT_PRIMARY,
+        QPalette.Highlight: COLOR_BG_ACTIVE,
+        QPalette.HighlightedText: COLOR_TEXT_PRIMARY,
+        QPalette.PlaceholderText: COLOR_TEXT_MUTED,
+    }
+    for role, color in roles.items():
+        pal.setColor(role, QColor(color))
+    for role in (QPalette.Text, QPalette.WindowText, QPalette.ButtonText):
+        pal.setColor(QPalette.Disabled, role, QColor(COLOR_TEXT_MUTED))
+    app.setPalette(pal)
+    app.setStyleSheet(GLOBAL_THEME)
 

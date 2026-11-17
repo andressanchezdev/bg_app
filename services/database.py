@@ -33,23 +33,21 @@ import urllib.request
 import urllib.error
 
 
+import app_paths
+
+
 def get_app_base_dir() -> str:
-    """Retorna el directorio base tanto en desarrollo como en ejecutable congelado (frozen)."""
-    if getattr(sys, "frozen", False):
-        return os.path.dirname(sys.executable)
-    return os.getcwd()
+    """Directorio de datos escribible del usuario (compatible con ejecutable instalado)."""
+    return str(app_paths.user_data_dir())
 
 
-# Cargar variables de entorno desde .env si existe
 APP_BASE_DIR = get_app_base_dir()
-ENV_PATH = os.path.join(APP_BASE_DIR, ".env")
-if not os.path.exists(ENV_PATH) and hasattr(sys, "_MEIPASS"):
-    cand_env = os.path.join(sys._MEIPASS, ".env")
-    if os.path.exists(cand_env):
-        ENV_PATH = cand_env
+_user_env = os.path.join(APP_BASE_DIR, ".env")
+_bundled_env = app_paths.find_resource(".env")
+ENV_PATH = _user_env if os.path.exists(_user_env) or not _bundled_env else str(_bundled_env)
 
-CONFIG_FILE_PATH = os.path.join(APP_BASE_DIR, "output", "db_config.json")
-DEFAULT_SQLITE_PATH = os.path.join(APP_BASE_DIR, "output", "bg_app_local.db")
+CONFIG_FILE_PATH = str(app_paths.output_dir() / "db_config.json")
+DEFAULT_SQLITE_PATH = str(app_paths.output_dir() / "bg_app_local.db")
 
 
 def load_env_variables() -> Dict[str, str]:
@@ -83,7 +81,6 @@ DEFAULT_PG_CONFIG = {
     "password": ENV_VALUES.get("DB_PASSWORD", os.getenv("DB_PASSWORD", "password_123"))
 }
 
-DEFAULT_SQLITE_PATH = os.path.join(os.getcwd(), "output", "bg_app_local.db")
 
 DEFAULT_DB_CONFIG = {
     "active_engine": "postgres",

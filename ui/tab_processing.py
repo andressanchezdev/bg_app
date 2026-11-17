@@ -1,12 +1,13 @@
 from PySide6.QtWidgets import QWidget, QPushButton, QFileDialog, QMessageBox, QVBoxLayout
 from services.image_indexer import ImageIndexer
+import app_paths
 
 
 class ProcessingTabWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.current_mapping = []
-        self.json_map_path = "output/image_map.json"
+        self.json_map_path = str(app_paths.output_dir() / "image_map.json")
 
     def select_folder_and_index(self):
         """Abre un diálogo para seleccionar carpeta y mapear su contenido."""

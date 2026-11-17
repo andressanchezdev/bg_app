@@ -12,7 +12,7 @@ class SettingsTabWidget(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.gcp_key_path = os.path.join(os.getcwd(), "credentials", "gcp_key.json")
+        self.gcp_key_path = config.resolve_credentials_path()
         self._init_ui()
 
     def _init_ui(self):

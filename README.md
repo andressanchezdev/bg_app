@@ -1,4 +1,4 @@
-# IA Background Remover, Editor & Batch Converter
+# Remover Background IP - Editor & Batch Converter
 
 Aplicación de escritorio desarrollada en Python con **PySide6** para la eliminación de fondos mediante Inteligencia Artificial, edición manual fina con pinceles y procesamiento/conversión por lotes con exportación optimizada a formato **WebP** y sincronización opcional con **Google Cloud Storage (GCS)**.
 
@@ -153,3 +153,63 @@ python main.py
 3. Selecciona la carpeta de destino.
 4. Ajusta las opciones deseadas (Fondo blanco, Redimensionamiento, Subida a GCS, Calidad WebP).
 5. Pulsa **Iniciar Procesamiento en Lote**. Al finalizar, el estado quedará registrado en `output/image_map.json`.
+
+---
+
+## 🌐 v2: Segundo plano y API en la red local
+
+Al instalarse, la app arranca con Windows (`--background`), queda en la **bandeja del sistema** (Administrador de tareas → *Procesos en segundo plano*) y escucha peticiones HTTP de la misma red. Cerrar la ventana la oculta; para salir use el icono de la bandeja → **Salir**. Abrir el acceso directo mientras ya corre muestra la ventana existente (una sola instancia).
+
+| Modo | Puerto por defecto |
+|------|--------------------|
+| Desarrollo (`python main.py`) | `8765` |
+| Instalado (producción) | `48765` (elegible en el instalador) |
+
+Precedencia del puerto: variable `BG_APP_PORT` > Configuración (`settings.json`) > puerto elegido en el instalador > valor por defecto. Se cambia en **Configuración → 4. Servidor de Red Local** sin reinstalar. Ahí también se ve/regenera la **API Key** y las direcciones LAN.
+
+### Endpoints
+
+```bash
+# Estado (sin autenticación)
+curl http://192.168.1.10:48765/health
+
+# Enviar una carpeta comprimida (subcarpetas = código de producto) y subir a GCS
+curl -X POST -H "X-API-Key: <clave>" -H "Content-Type: application/zip" \
+     --data-binary @lote.zip "http://192.168.1.10:48765/jobs?upload_gcs=true"
+
+# Enviar varias imágenes sueltas (multipart, campo "files")
+curl -X POST -H "X-API-Key: <clave>" -F "files=@01100610-5.jpg" -F "files=@01100611-2.jpg" \
+     http://192.168.1.10:48765/jobs
+
+# Consultar el trabajo
+curl -H "X-API-Key: <clave>" http://192.168.1.10:48765/jobs/<job_id>
+```
+
+Parámetros opcionales de `POST /jobs`: `quality` (1-100, 90), `white_bg` (false), `remove_bg` (true), `resize` (true), `width`/`height` (900), `mode` (`contain`|`cover`|`stretch`), `upload_gcs` (true), `register_db` (false: registra las URLs en MySQL/API como el lote de la v1). Límite de subida: 500 MB.
+
+### Datos y logs (app instalada)
+
+Todo lo escribible vive en `%LOCALAPPDATA%\RemoverBackgroundIP\`: `output\settings.json`, `output\processed\`, `jobs\` (se limpian a los 3 días) y `logs\app.log`. Un `.env` o `credentials\gcp_key.json` puestos ahí tienen prioridad sobre los empaquetados.
+
+## 📦 Generar el instalador (release)
+
+Requisitos: dependencias de `requirements.txt` + `pyinstaller`, los modelos en `models/` (no están en git) e [Inno Setup 6](https://jrsoftware.org/isinfo.php) (`winget install JRSoftware.InnoSetup`).
+
+```bash
+python build_release.py
+```
+
+Hace: limpieza → PyInstaller con `bg_app.spec` → `RemoverBackgroundIP.exe --self-test` (aborta si falla) → Inno Setup con `installer.iss` → `dist/setup-<versión>.exe`. Con `--skip-installer` solo genera la carpeta de la app.
+
+El instalador pide permisos de administrador (instala en *Program Files* y agrega una regla del Firewall de Windows para redes **privadas/dominio**; si la red de Windows está marcada como *Pública*, los demás equipos no podrán conectarse). Al desinstalar se eliminan la regla, el inicio automático y los archivos del programa.
+
+> ⚠️ El instalador incluye `.env` y `credentials/gcp_key.json` si existen al compilar: quien tenga el `setup.exe` tiene esas credenciales.
+
+
+
+=====================================================================instalacion==============================================
+nstalación: pide permisos de administrador. En la página del puerto deja 48765 o pon el que prefieras, y deja marcadas las tareas de inicio con Windows y Firewall.
+Arranque: la app debe abrir sin errores y aparecer el ícono verde “IA” en la bandeja, junto al reloj.
+Desde este equipo: abre http://localhost:48765/health en el navegador. Debe responder con "status": "ok".
+Desde otro equipo o celular de la misma red: abre http://<IP-de-este-equipo>:48765/health. La IP aparece en el menú de la bandeja y en Configuración → 4. Servidor de Red Local.
+Reinicio: al reiniciar o volver a iniciar sesión, la app debe arrancar sola en la bandeja.

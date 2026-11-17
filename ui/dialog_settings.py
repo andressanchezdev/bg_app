@@ -1,12 +1,16 @@
 import os
+import app_paths
 import shutil
 from pathlib import Path
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
     QPushButton, QFileDialog, QMessageBox, QGroupBox, QGridLayout,
-    QComboBox, QWidget, QFrame, QTextEdit, QScrollArea, QSpinBox
+    QComboBox, QWidget, QFrame, QTextEdit, QScrollArea, QSpinBox, QCheckBox, QApplication
 )
 from PySide6.QtCore import Qt, Signal
+import secrets
+
+from services import autostart
 
 import config
 from services.cloud_storage import CloudStorageService
@@ -22,6 +26,7 @@ class SettingsDialog(QDialog):
     - Apariencia Visual (Tema).
     """
     theme_changed = Signal(str)
+    server_settings_changed = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -30,7 +35,7 @@ class SettingsDialog(QDialog):
         self.setModal(True)
         self.setStyleSheet(GLOBAL_THEME)
 
-        self.gcp_key_path = getattr(config, "GCS_CREDENTIALS_PATH", os.path.join(os.getcwd(), "credentials", "gcp_key.json"))
+        self.gcp_key_path = config.resolve_credentials_path()
         self._init_ui()
         self._load_values()
 
@@ -85,6 +90,22 @@ class SettingsDialog(QDialog):
         self.txt_base_folder.setPlaceholderText("ej: dependencias/img/productos/")
         gcp_grid.addWidget(self.txt_base_folder, 1, 1)
 
+        lbl_public = QLabel("URL pública:")
+        lbl_public.setObjectName("body")
+        gcp_grid.addWidget(lbl_public, 3, 0)
+        public_row = QHBoxLayout()
+        self.txt_public_base_url = QLineEdit()
+        self.txt_public_base_url.setPlaceholderText("vacío = https://storage.googleapis.com/<bucket>/")
+        self.txt_public_base_url.setToolTip(
+            "Dirección con la que se consumen las imágenes. La ruta guardada en la base es el nombre del objeto "
+            "(carpeta base/código/archivo.webp); esta URL solo arma el enlace público.")
+        public_row.addWidget(self.txt_public_base_url)
+        self.btn_test_public_url = QPushButton("Probar URL")
+        self.btn_test_public_url.setCursor(Qt.PointingHandCursor)
+        self.btn_test_public_url.clicked.connect(self._test_public_url)
+        public_row.addWidget(self.btn_test_public_url)
+        gcp_grid.addLayout(public_row, 3, 1)
+
         lbl_cred = QLabel("Clave JSON:")
         lbl_cred.setObjectName("body")
         gcp_grid.addWidget(lbl_cred, 2, 0)
@@ -130,6 +151,18 @@ class SettingsDialog(QDialog):
 
         db_grid = QGridLayout()
         db_grid.setSpacing(8)
+
+        # Motor (fila 6, se agrega al final del grid) · el puerto se sugiere al cambiarlo
+        self.combo_db_engine = QComboBox()
+        self.combo_db_engine.addItem("MariaDB / MySQL (HeidiSQL)", "mysql")
+        self.combo_db_engine.addItem("PostgreSQL", "postgres")
+        self.combo_db_engine.currentIndexChanged.connect(self._on_engine_changed)
+        self.txt_db_schema = QLineEdit()
+        self.txt_db_schema.setPlaceholderText("public")
+        self.txt_db_company = QLineEdit()
+        self.txt_db_company.setPlaceholderText("opcional: id de la compañía")
+        self.txt_db_company.setToolTip("Solo PostgreSQL. Vacío = busca el código en todas las compañías; "
+                                       "si el código existe en varias, la imagen no se registra y se avisa.")
 
         # DB Host
         lbl_host = QLabel("DB Host:")
@@ -182,11 +215,11 @@ class SettingsDialog(QDialog):
         db_grid.addWidget(self.txt_db_pass, 2, 3)
 
         # Base URL (Endpoint API)
-        lbl_api = QLabel("Base URL:")
+        lbl_api = QLabel("Endpoint API (POST):")
         lbl_api.setObjectName("body")
         db_grid.addWidget(lbl_api, 3, 0)
         self.txt_api_endpoint = QLineEdit()
-        self.txt_api_endpoint.setPlaceholderText("ej: http://tuservidor.com/api/productos/imagenes")
+        self.txt_api_endpoint.setPlaceholderText("ej: http://tuservidor.com/api/productos/imagenes (POST de registros, no la URL del bucket)")
         db_grid.addWidget(self.txt_api_endpoint, 3, 1, 1, 3)
 
         # Columna Código (Búsqueda)
@@ -214,6 +247,19 @@ class SettingsDialog(QDialog):
         self.combo_sync_mode.addItem("Solo Endpoint REST API (HTTP POST)", "api")
         self.combo_sync_mode.addItem("Ambos (Base de Datos + Endpoint API)", "both")
         db_grid.addWidget(self.combo_sync_mode, 5, 1, 1, 3)
+
+        lbl_engine = QLabel("Motor:")
+        lbl_engine.setObjectName("body")
+        db_grid.addWidget(lbl_engine, 6, 0)
+        db_grid.addWidget(self.combo_db_engine, 6, 1)
+        self.lbl_db_schema = QLabel("Esquema:")
+        self.lbl_db_schema.setObjectName("body")
+        db_grid.addWidget(self.lbl_db_schema, 6, 2)
+        db_grid.addWidget(self.txt_db_schema, 6, 3)
+        self.lbl_db_company = QLabel("Compañía:")
+        self.lbl_db_company.setObjectName("body")
+        db_grid.addWidget(self.lbl_db_company, 7, 0)
+        db_grid.addWidget(self.txt_db_company, 7, 1)
 
         layout_db.addLayout(db_grid)
 
@@ -257,6 +303,55 @@ class SettingsDialog(QDialog):
         layout_ui.addStretch()
         main_layout.addWidget(group_ui)
 
+        # -------------------------------------------------------------
+        # 4. SERVIDOR DE RED LOCAL (v2)
+        # -------------------------------------------------------------
+        group_srv = QGroupBox("4. Servidor de Red Local y Segundo Plano")
+        layout_srv = QVBoxLayout(group_srv)
+        layout_srv.setSpacing(8)
+
+        self.chk_server_enabled = QCheckBox("Escuchar peticiones de la red local (API HTTP)")
+        layout_srv.addWidget(self.chk_server_enabled)
+
+        srv_grid = QGridLayout()
+        srv_grid.setSpacing(8)
+        lbl_port = QLabel("Puerto:")
+        lbl_port.setObjectName("body")
+        srv_grid.addWidget(lbl_port, 0, 0)
+        self.spin_server_port = QSpinBox()
+        self.spin_server_port.setRange(1024, 65535)
+        srv_grid.addWidget(self.spin_server_port, 0, 1)
+
+        lbl_key = QLabel("API Key:")
+        lbl_key.setObjectName("body")
+        srv_grid.addWidget(lbl_key, 1, 0)
+        key_row = QHBoxLayout()
+        self.txt_api_key = QLineEdit()
+        self.txt_api_key.setReadOnly(True)
+        key_row.addWidget(self.txt_api_key, stretch=1)
+        btn_copy_key = QPushButton("Copiar")
+        btn_copy_key.clicked.connect(lambda: QApplication.clipboard().setText(self.txt_api_key.text()))
+        key_row.addWidget(btn_copy_key)
+        btn_regen_key = QPushButton("Regenerar")
+        btn_regen_key.clicked.connect(lambda: self.txt_api_key.setText(secrets.token_urlsafe(24)))
+        key_row.addWidget(btn_regen_key)
+        srv_grid.addLayout(key_row, 1, 1)
+        layout_srv.addLayout(srv_grid)
+
+        self.lbl_server_urls = QLabel("")
+        self.lbl_server_urls.setObjectName("caption")
+        self.lbl_server_urls.setWordWrap(True)
+        self.lbl_server_urls.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        layout_srv.addWidget(self.lbl_server_urls)
+
+        self.chk_autostart = QCheckBox("Iniciar automáticamente con Windows (en segundo plano)")
+        self.chk_autostart.setEnabled(autostart.is_supported())
+        if not autostart.is_supported():
+            self.chk_autostart.setToolTip("Disponible solo en la aplicación instalada.")
+        layout_srv.addWidget(self.chk_autostart)
+
+        main_layout.addWidget(group_srv)
+
         scroll.setWidget(container)
         root_layout.addWidget(scroll)
 
@@ -282,6 +377,7 @@ class SettingsDialog(QDialog):
         # GCP
         self.txt_bucket.setText(getattr(config, "GCS_BUCKET_NAME", "importadorapremiumonline"))
         self.txt_base_folder.setText(getattr(config, "GCS_BASE_FOLDER", "dependencias/img/productos/"))
+        self.txt_public_base_url.setText(getattr(config, "GCS_PUBLIC_BASE_URL", ""))
 
         # DB / Endpoint
         self.txt_db_host.setText(getattr(config, "DB_HOST", "localhost"))
@@ -294,6 +390,15 @@ class SettingsDialog(QDialog):
         self.txt_db_pass.setText(getattr(config, "DB_PASSWORD", "password_123"))
         self.txt_api_endpoint.setText(getattr(config, "DB_API_ENDPOINT", ""))
 
+        engine = getattr(config, "DB_ENGINE", "") or ("mysql" if int(getattr(config, "DB_PORT", 3306)) in (3306, 3307, 3308) else "postgres")
+        self._loading_engine = True
+        idx_engine = self.combo_db_engine.findData(engine)
+        self.combo_db_engine.setCurrentIndex(idx_engine if idx_engine != -1 else 0)
+        self._loading_engine = False
+        self.txt_db_schema.setText(getattr(config, "DB_SCHEMA", "public") or "public")
+        self.txt_db_company.setText(str(getattr(config, "DB_COMPANY_ID", "") or ""))
+        self._toggle_pg_fields()
+
         sync_mode = getattr(config, "DB_SYNC_MODE", "db")
         idx_mode = self.combo_sync_mode.findData(sync_mode)
         if idx_mode != -1:
@@ -305,7 +410,57 @@ class SettingsDialog(QDialog):
         if idx != -1:
             self.combo_theme.setCurrentIndex(idx)
 
+        # Servidor
+        self.chk_server_enabled.setChecked(bool(getattr(config, "SERVER_ENABLED", True)))
+        self.spin_server_port.setValue(int(getattr(config, "SERVER_PORT", 8765)))
+        self.txt_api_key.setText(getattr(config, "SERVER_API_KEY", ""))
+        self.chk_autostart.setChecked(autostart.is_enabled())
+        self._refresh_server_urls()
+
         self._refresh_cred_label()
+
+    def _toggle_pg_fields(self):
+        is_pg = (self.combo_db_engine.currentData() or "mysql") == "postgres"
+        for widget in (self.lbl_db_schema, self.txt_db_schema, self.lbl_db_company, self.txt_db_company):
+            widget.setVisible(is_pg)
+
+    def _on_engine_changed(self, _index):
+        self._toggle_pg_fields()
+        if getattr(self, "_loading_engine", False):
+            return
+        engine = self.combo_db_engine.currentData()
+        port = self.spin_db_port.value()
+        # solo cambia el puerto si tenía el del otro motor
+        if engine == "postgres" and port in (3306, 3307, 3308):
+            self.spin_db_port.setValue(5432)
+        elif engine == "mysql" and port == 5432:
+            self.spin_db_port.setValue(3306)
+
+    def _test_public_url(self):
+        import urllib.request
+        base = self.txt_public_base_url.text().strip() or f"https://storage.googleapis.com/{self.txt_bucket.text().strip()}/"
+        url = base.rstrip("/") + "/"
+        try:
+            req = urllib.request.Request(url, method="HEAD", headers={"User-Agent": "BgApp-Client/1.0"})
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                code = resp.getcode()
+        except urllib.error.HTTPError as e:
+            code = e.code
+        except Exception as e:
+            QMessageBox.critical(self, "URL pública", f"No se pudo alcanzar {url}:\n{e}")
+            return
+        # el bucket responde aunque la raíz no se pueda listar (403/404 = el servidor existe)
+        if code < 500:
+            QMessageBox.information(self, "URL pública",
+                                    f"El servidor respondió (HTTP {code}).\n\nLas imágenes quedarán en:\n{url}<carpeta base>/<código>/<archivo>.webp")
+        else:
+            QMessageBox.critical(self, "URL pública", f"El servidor respondió con error HTTP {code}.")
+
+    def _refresh_server_urls(self):
+        from server.api_server import lan_addresses
+        port = self.spin_server_port.value()
+        urls = [f"http://{ip}:{port}" for ip in lan_addresses()] or [f"http://localhost:{port}"]
+        self.lbl_server_urls.setText("Direcciones en la red: " + "   ".join(urls) + "   (GET /health, POST /jobs)")
 
     def _refresh_cred_label(self):
         if os.path.exists(self.gcp_key_path):
@@ -325,11 +480,14 @@ class SettingsDialog(QDialog):
         if not file_path:
             return
 
+        # Siempre en la carpeta de datos del usuario (la carpeta de instalación es de solo lectura)
+        self.gcp_key_path = str(app_paths.user_data_dir() / "credentials" / "gcp_key.json")
         dest_dir = os.path.dirname(self.gcp_key_path)
         os.makedirs(dest_dir, exist_ok=True)
         try:
             shutil.copy2(file_path, self.gcp_key_path)
             os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = self.gcp_key_path
+            config.GCS_CREDENTIALS_PATH = self.gcp_key_path
             self._refresh_cred_label()
             QMessageBox.information(
                 self,
@@ -404,7 +562,10 @@ class SettingsDialog(QDialog):
             "code_column": self.txt_db_code_col.text().strip() or "codigo",
             "image_column": self.txt_db_img_col.text().strip() or "imagenArray",
             "api_endpoint": self.txt_api_endpoint.text().strip(),
-            "sync_mode": self.combo_sync_mode.currentData() or "db"
+            "sync_mode": self.combo_sync_mode.currentData() or "db",
+            "engine": self.combo_db_engine.currentData() or "mysql",
+            "schema": self.txt_db_schema.text().strip() or "public",
+            "company_id": self.txt_db_company.text().strip()
         }
 
     def _test_db_connection(self):
@@ -415,9 +576,10 @@ class SettingsDialog(QDialog):
             self.lbl_db_status.setStyleSheet(f"color: {COLOR_STATUS_OK}; font-weight: bold;")
             QMessageBox.information(self, "Conexión a Base de Datos", res["message"])
         else:
-            self.lbl_db_status.setText("Error al conectar a PostgreSQL")
+            engine_label = "PostgreSQL" if cfg["engine"] == "postgres" else "MySQL / MariaDB"
+            self.lbl_db_status.setText(f"Error al conectar a {engine_label}")
             self.lbl_db_status.setStyleSheet(f"color: {COLOR_STATUS_ERR}; font-weight: bold;")
-            QMessageBox.critical(self, "Fallo en PostgreSQL", res["message"])
+            QMessageBox.critical(self, f"Fallo en {engine_label}", res["message"])
 
     def _test_api_endpoint(self):
         endpoint = self.txt_api_endpoint.text().strip()
@@ -425,6 +587,12 @@ class SettingsDialog(QDialog):
             QMessageBox.warning(self, "Falta Endpoint", "Por favor ingresa la URL del Endpoint API (ej: http://localhost:5000/api/productos).")
             return
 
+        if "storage.googleapis.com" in endpoint:
+            QMessageBox.warning(
+                self, "Endpoint API",
+                "Esta dirección es del bucket de imágenes, no de una API: el endpoint recibe un POST con los registros.\n\n"
+                "La URL de las imágenes va en 'URL pública' (Google Cloud Storage).")
+            return
         res = test_api_endpoint(endpoint)
         if res["ok"]:
             self.lbl_db_status.setText("Endpoint API respondió exitosamente.")
@@ -436,7 +604,7 @@ class SettingsDialog(QDialog):
             QMessageBox.critical(self, "Fallo en Endpoint API", res["message"])
 
     def _sync_last_json(self):
-        json_path = os.path.join(os.getcwd(), "output", "processed", "image_map.json")
+        json_path = str(app_paths.processed_dir() / "image_map.json")
         if not os.path.exists(json_path):
             QMessageBox.warning(self, "Sin Manifiesto", f"No se encontró el archivo de manifiesto:\n{json_path}\n\nPrimero procesa o sube un lote a GCP.")
             return
@@ -459,6 +627,14 @@ class SettingsDialog(QDialog):
 
         # Configuración DB
         cfg = self._get_current_db_dialog_cfg()
+        if cfg["company_id"] and not cfg["company_id"].isdigit():
+            QMessageBox.warning(self, "Compañía", "El id de la compañía debe ser un número (o déjelo vacío).")
+            return
+        if cfg["sync_mode"] in ("api", "both") and "storage.googleapis.com" in cfg["api_endpoint"]:
+            QMessageBox.warning(self, "Endpoint API",
+                                "El endpoint API tiene la dirección del bucket. Con el modo de envío elegido se haría un POST al bucket.\n\n"
+                                "Corrija el endpoint o use el modo 'Solo Base de Datos'.")
+            return
 
         config.save_settings(
             theme=new_theme,
@@ -473,14 +649,28 @@ class SettingsDialog(QDialog):
             db_code_column=cfg["code_column"],
             db_image_column=cfg["image_column"],
             db_api_endpoint=cfg["api_endpoint"],
-            db_sync_mode=cfg["sync_mode"]
+            db_sync_mode=cfg["sync_mode"],
+            server_enabled=self.chk_server_enabled.isChecked(),
+            server_port=self.spin_server_port.value(),
+            server_api_key=self.txt_api_key.text().strip(),
+            db_engine=cfg["engine"],
+            db_schema=cfg["schema"],
+            db_company_id=cfg["company_id"],
+            public_base_url=self.txt_public_base_url.text().strip()
         )
 
+        if autostart.is_supported():
+            try:
+                autostart.set_enabled(self.chk_autostart.isChecked())
+            except OSError as e:
+                QMessageBox.warning(self, "Inicio con Windows", f"No se pudo actualizar el inicio automático:\n{e}")
+
         self.theme_changed.emit(new_theme)
+        self.server_settings_changed.emit()
 
         QMessageBox.information(
             self,
             "Configuración Guardada",
-            "Los ajustes de Google Cloud Storage, Base de Datos PostgreSQL y API se guardaron exitosamente."
+            "Los ajustes de Google Cloud Storage, Base de Datos, API y servidor de red se guardaron exitosamente."
         )
         self.accept()

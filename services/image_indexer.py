@@ -120,10 +120,13 @@ class ImageIndexer:
         return manifest
 
     @staticmethod
-    def save_to_json(data: List[Dict[str, Any]], output_json_path: str = "output/image_map.json") -> str:
+    def save_to_json(data: List[Dict[str, Any]], output_json_path: str = None) -> str:
         """
         Guarda la lista de registros mapeados en un archivo JSON.
         """
+        if not output_json_path:
+            import app_paths
+            output_json_path = str(app_paths.output_dir() / "image_map.json")
         out_path = Path(output_json_path)
         out_path.parent.mkdir(parents=True, exist_ok=True)
 

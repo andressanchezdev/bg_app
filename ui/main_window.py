@@ -1,4 +1,5 @@
 import os
+import app_paths
 import shutil
 import subprocess
 from pathlib import Path
@@ -183,9 +184,15 @@ class GcpUploadThread(QThread):
 
 
 class MainWindow(QMainWindow):
+    # Emitida al ocultar la ventana a la bandeja (cerrar con la X)
+    hidden_to_tray = Signal()
+    # Emitida cuando se guardan ajustes del servidor de red
+    server_settings_changed = Signal()
+
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("IA Background Remover & WebP Optimizer")
+        self.allow_close = False
+        self.setWindowTitle(f"{config.APP_NAME} — Optimizador WebP")
         self.resize(980, 700)
         self.setMinimumSize(850, 600)
         self.setAcceptDrops(True)
@@ -200,7 +207,7 @@ class MainWindow(QMainWindow):
         self.current_records: List[Dict[str, Any]] = []
         self.current_summary: Dict[str, Any] = {}
         self.current_input_root: str = ""
-        self.current_output_dir: str = os.path.join(os.getcwd(), "output", "processed")
+        self.current_output_dir: str = str(app_paths.processed_dir())
         self.current_batch_id: int = 0
         self.completed_count: int = 0
         self.processed_files: List[str] = []
@@ -653,10 +660,35 @@ class MainWindow(QMainWindow):
     # =========================================================================
     # LÓGICA DE CONTROL Y NAVEGACIÓN
     # =========================================================================
+    # SEGUNDO PLANO (v2): cerrar la ventana la oculta; el servidor sigue activo
+    # =========================================================================
+    def is_processing(self) -> bool:
+        return self.stack.currentIndex() == 2 and self.completed_count < len(self.current_records)
+
+    def confirm_quit(self) -> bool:
+        if not self.is_processing():
+            return True
+        reply = QMessageBox.question(
+            self, "Proceso en curso",
+            "Hay un lote procesándose. ¿Desea salir de todos modos?",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+        )
+        return reply == QMessageBox.Yes
+
+    def closeEvent(self, event):
+        if self.allow_close:
+            event.accept()
+            return
+        event.ignore()
+        self.hide()
+        self.hidden_to_tray.emit()
+
+    # =========================================================================
     def _open_settings_dialog(self):
         login_dlg = SettingsLoginDialog(parent=self)
         if login_dlg.exec():
             dlg = SettingsDialog(parent=self)
+            dlg.server_settings_changed.connect(self.server_settings_changed.emit)
             dlg.exec()
 
     def _browse_directory(self):
@@ -794,7 +826,7 @@ class MainWindow(QMainWindow):
         self.lbl_progress_counter.setText(f"0 de {total} (0%)")
 
         # Preparar directorio de salida por defecto
-        self.current_output_dir = os.path.join(os.getcwd(), "output", "processed")
+        self.current_output_dir = str(app_paths.processed_dir())
         os.makedirs(self.current_output_dir, exist_ok=True)
 
         # Inicializar manifiesto JSON de mapeo y rutas (Consumo GCP)
@@ -1175,7 +1207,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Sin Imágenes", "No hay imágenes procesadas en el lote para subir a Google Cloud.")
             return
 
-        gcp_key = getattr(config, "GCS_CREDENTIALS_PATH", os.path.join(os.getcwd(), "credentials", "gcp_key.json"))
+        gcp_key = config.resolve_credentials_path()
         if not os.path.exists(gcp_key):
             candidate = os.path.join(os.path.dirname(sys.executable), "credentials", "gcp_key.json")
             if os.path.exists(candidate):
